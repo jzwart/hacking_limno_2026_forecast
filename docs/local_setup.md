@@ -35,7 +35,8 @@ forecasting dependencies into the environment.
 ```bash
 uv sync                      # installs pinned deps from pyproject.toml
 uv sync --extra zonal        # also install xvec/exactextract for the zonal appendix
-uv run jupyter lab
+uv run --with jupyter jupyter lab
+# then open notebooks/forecast_workshop.ipynb
 ```
 Then select the `.venv` interpreter (`.venv/bin/python`, or
 `.venv\Scripts\python` on Windows) in your editor/IDE. With `uv sync` done, you
@@ -76,6 +77,13 @@ and set `device="cuda"` where the model loads.
 - **`flashrnn` / `tirex-2` build fails with a CUDA/compiler error:** you are
   building the CUDA kernels on an unsupported GPU. Use the CPU torch install
   above (the default in the notebook).
+- **`SSL: CERTIFICATE_VERIFY_FAILED` / "self-signed certificate in certificate
+  chain":** you are behind a TLS-inspecting proxy (common on corporate/USGS
+  networks) whose root CA your OS trusts but Python's bundled `certifi` store does
+  not. The notebook installs [`truststore`](https://pypi.org/project/truststore/)
+  and calls `truststore.inject_into_ssl()` in the imports cell to use the OS trust
+  store instead — just re-run the cells. If you hit this in your own script,
+  `import truststore; truststore.inject_into_ssl()` before any `requests` call.
 - **`cartopy` build issues:** `uv` usually resolves wheels; if not, install GEOS
   and PROJ via your system package manager, or run the notebook on Colab instead.
 - **`tirex-2` platform:** tested on Linux and macOS. On Windows, prefer Colab or

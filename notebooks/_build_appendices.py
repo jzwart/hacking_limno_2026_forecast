@@ -43,8 +43,16 @@ This appendix is optional and standalone; it reuses the same data sources as the
 core notebook.
 """))
 zonal.append(("code", r"""# numpy pinned first so later installs don't leave a half-upgraded numpy.
-!pip install -q "numpy>=1.26,<2.1" dynamical-catalog rioxarray xvec exactextract geopandas requests"""))
-zonal.append(("code", r'''import dynamical_catalog
+!pip install -q "numpy>=1.26,<2.1" truststore dynamical-catalog rioxarray xvec exactextract geopandas requests"""))
+zonal.append(("code", r'''# Route TLS through the OS trust store so https works behind TLS-inspecting
+# proxies (e.g. USGS) that inject a self-signed root CA. No-op if not installed.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
+import dynamical_catalog
 import geopandas as gpd
 import pandas as pd
 import requests

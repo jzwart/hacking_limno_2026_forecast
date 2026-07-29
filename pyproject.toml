@@ -15,6 +15,7 @@ dependencies = [
     "numpy",
     "requests",
     "shapely",
+    "truststore",
 ]
 
 [project.optional-dependencies]
