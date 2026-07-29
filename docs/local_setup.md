@@ -54,7 +54,28 @@ can **skip the `!uv pip install` cell** at the top of each notebook.
 - **Optional HF token.** Setting `HF_TOKEN` in your environment avoids occasional
   download rate limits, but the models are public so it is not required.
 
+## GPU vs CPU for TiRex-2
+The notebook installs the **CPU build of PyTorch** on purpose. TiRex-2 depends on
+`flashrnn`, whose CUDA kernels require a fairly recent GPU (compute capability
+≥ 8.0) and otherwise **fail to compile** — which is exactly what happens on
+Colab's free tier. CPU is fast enough for the single-site forecast in this
+workshop.
+
+If you have a capable local GPU and want the CUDA path, install a CUDA torch
+build *before* `tirex-2` (matching your CUDA toolkit), e.g.:
+```bash
+uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+uv pip install tirex-2
+```
+and set `device="cuda"` where the model loads.
+
 ## Troubleshooting
+- **`cannot import name '_center' from numpy._core.umath`:** a half-upgraded
+  numpy. On Colab, restart the runtime and re-run from the top (the install cell
+  pins numpy and restarts once automatically). Locally, `uv sync` avoids it.
+- **`flashrnn` / `tirex-2` build fails with a CUDA/compiler error:** you are
+  building the CUDA kernels on an unsupported GPU. Use the CPU torch install
+  above (the default in the notebook).
 - **`cartopy` build issues:** `uv` usually resolves wheels; if not, install GEOS
   and PROJ via your system package manager, or run the notebook on Colab instead.
 - **`tirex-2` platform:** tested on Linux and macOS. On Windows, prefer Colab or

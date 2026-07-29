@@ -138,9 +138,11 @@ Two questions the core notebook glosses over:
 This is a diagnostic notebook — it deliberately runs on a single site so it stays
 fast in a live session.
 """))
-dive.append(("code", r"""# numpy pinned first so later installs don't leave a half-upgraded numpy.
-# On Colab, if a numpy ImportError appears, restart the runtime and re-run.
-!pip install -q "numpy>=1.26,<2.1" 'chronos-forecasting[extras]>=2.2' tirex-2 torch pandas matplotlib"""))
+dive.append(("code", r"""# CPU torch first so tirex-2's flashrnn CUDA kernels don't try (and fail) to
+# build on Colab's default GPU; then numpy pinned so later installs don't leave a
+# half-upgraded numpy. If a numpy ImportError appears on Colab, restart & re-run.
+!pip install -q "torch<2.10" torchvision --index-url https://download.pytorch.org/whl/cpu
+!pip install -q "numpy>=1.26,<2.1" 'chronos-forecasting[extras]>=2.2' tirex-2 pandas matplotlib"""))
 dive.append(("code", r'''import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -177,7 +179,10 @@ dive.append(("markdown", r"""## Forecast helpers (target-only, no covariates)
 To isolate the gap effect we forecast the univariate target with no weather
 covariates. Both APIs accept a bare context series.
 """))
-dive.append(("code", r'''from tirex2.data import TimeseriesType
+dive.append(("code", r'''from tirex2 import TimeseriesType
+
+_Q = [round(float(q), 3) for q in tirex.quantiles.detach().cpu().numpy()]
+_MEDIAN_Q = _Q.index(0.5)
 
 def chronos_forecast(context_series):
     df = context_series.rename("value").reset_index().rename(columns={"index": "timestamp"})
@@ -190,10 +195,11 @@ def chronos_forecast(context_series):
     return pred["predictions"].to_numpy()
 
 def tirex_forecast(context_series):
-    target = context_series.to_numpy(dtype="float32")[None, :]  # NaNs allowed
-    ts = TimeseriesType(target=target)
+    target = context_series.to_numpy(dtype="float32")[None, :]  # (1, context_len), NaNs allowed
+    ts = TimeseriesType(target=torch.from_numpy(target), past_covariates=None,
+                        future_covariates=None)
     fc = tirex.forecast(timeseries=[ts], prediction_length=HORIZON, output_type="numpy")[0]
-    return np.asarray(fc)[0, 4, :]  # median quantile
+    return np.asarray(fc)[0, _MEDIAN_Q, :]  # median quantile
 '''))
 dive.append(("markdown", r"""## Punch synthetic gaps
 

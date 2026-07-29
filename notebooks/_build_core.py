@@ -58,23 +58,47 @@ this is not required).
 > ⚠️ **On Colab the runtime restarts once, automatically, after this cell.** The
 > install changes `numpy`, and Colab has already imported the old one — the
 > restart loads a clean environment. This is expected: **re-run from the top**
-> after it restarts (the install is cached, so it will be quick), then continue.""")
+> after it restarts (the install is cached, so it will be quick), then continue.
+>
+> We install the **CPU build of PyTorch** first. TiRex-2 depends on `flashrnn`,
+> whose CUDA kernels require a newer GPU than Colab's free tier provides and
+> otherwise fail to build; the CPU torch build sidesteps that and is fast enough
+> for a single-site forecast. If you have a capable GPU locally, see
+> `docs/local_setup.md` for the GPU path.""")
 
 code(r'''import os
+import subprocess
+import sys
 
 # A disk sentinel survives the kernel restart (kernel *state* does not), so we
 # install + restart exactly once even under "Run all" / repeated top-to-bottom.
+# It is written ONLY after a fully successful install, so a failure re-runs clean.
 _SENTINEL = "/tmp/.forecast_workshop_installed"
 
+
+def _pip(*pkgs, extra_args=()):
+    """pip install as a subprocess so we can check the exit code and see output."""
+    cmd = [sys.executable, "-m", "pip", "install", *extra_args, *pkgs]
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=subprocess.STDOUT)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Dependency install failed (see output above). Nothing was cached, so "
+            "re-run this cell after resolving the offending package."
+        )
+
+
 if not os.path.exists(_SENTINEL):
-    # Install the forecasting stack. numpy is pinned so pulling in the model
-    # libraries doesn't leave a half-upgraded numpy (the classic
-    # "cannot import name '_center' from numpy._core.umath" error).
-    !pip install -q "numpy>=1.26,<2.1" \
-        dynamical-catalog rioxarray cartopy geopandas \
-        'chronos-forecasting[extras]>=2.2' \
-        tirex-2 \
-        git+https://github.com/kratzert/RivRetrieve-Python.git
+    # 1) CPU PyTorch first. This avoids compiling flashrnn's CUDA kernels (a
+    #    tirex-2 dependency) which fail to build on Colab's default GPU.
+    _pip("torch<2.10", "torchvision",
+         extra_args=("--index-url", "https://download.pytorch.org/whl/cpu"))
+    # 2) numpy pinned so the heavier installs below don't half-upgrade it (the
+    #    classic "cannot import name '_center' from numpy._core.umath" crash).
+    _pip("numpy>=1.26,<2.1")
+    # 3) the forecasting stack.
+    _pip("dynamical-catalog", "rioxarray", "cartopy", "geopandas",
+         "chronos-forecasting[extras]>=2.2", "tirex-2",
+         "git+https://github.com/kratzert/RivRetrieve-Python.git")
     open(_SENTINEL, "w").close()
 
     # On Colab, restart the runtime once so the freshly installed numpy is the
@@ -418,42 +442,49 @@ def run_chronos2(future_basin):
 )
 
 code(r'''import torch
-from tirex2 import load_model
-from tirex2.data import TimeseriesType  # dataclass carrying target + covariates
+from tirex2 import TimeseriesType, load_model
 
 _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 tirex = load_model("NX-AI/TiRex-2", device=_DEVICE)
 
-# Past covariates the model conditions on (aligned with history_df order).
-_PAST_COVS = ["temperature_2m", "precipitation_surface"]
+# Index of the median (0.5) among the model's native quantiles — read from the
+# model rather than hardcoded, so this survives a change in quantile count.
+_Q = [round(float(q), 3) for q in tirex.quantiles.detach().cpu().numpy()]
+_MEDIAN_Q = _Q.index(0.5)
+
+# Temperature and precipitation are FUTURE-KNOWN covariates: we have both the
+# analysis over the history window and a forecast over the horizon. TiRex-2 wants
+# such covariates as one series spanning context_length + prediction_length.
+_COVS = ["temperature_2m", "precipitation_surface"]
 
 
 def run_tirex2(future_basin):
     """One TiRex-2 (median) trace per ensemble member. Returns DataFrame [time x member].
 
-    TiRex-2 takes a target series plus past/future known covariates. We build one
-    TimeseriesType per member (shared history, member-specific future weather) and
-    take the median quantile as the point trace.
+    Builds one TimeseriesType per member: a shared target history plus that
+    member's future-known weather covariates (history covariates concatenated
+    with the member's forecast covariates). Returns the median quantile.
     """
     hist = history_df.set_index("timestamp")
-    target = hist[VARIABLE].to_numpy(dtype="float32")            # (context_len,) NaNs ok
-    past_cov = hist[_PAST_COVS].to_numpy(dtype="float32").T      # (n_cov, context_len)
+    target = hist[VARIABLE].to_numpy(dtype="float32")[None, :]   # (1, context_len), NaNs ok
+    hist_cov = hist[_COVS].to_numpy(dtype="float32").T           # (n_cov, context_len)
     fut = _future_long(future_basin)
 
     out = {}
     valid_time = None
     for member, g in fut.groupby("member"):
         g = g.sort_values("timestamp")
-        future_cov = g[_PAST_COVS].to_numpy(dtype="float32").T   # (n_cov, horizon)
+        fut_cov = g[_COVS].to_numpy(dtype="float32").T           # (n_cov, horizon)
+        future_covariates = np.concatenate([hist_cov, fut_cov], axis=1)  # context+horizon
         ts = TimeseriesType(
-            target=target[None, :],          # (n_targets=1, context_len)
-            past_covariates=past_cov,
-            future_covariates=future_cov,
+            target=torch.from_numpy(target),
+            past_covariates=None,
+            future_covariates=torch.from_numpy(future_covariates),
         )
         fc = tirex.forecast(timeseries=[ts], prediction_length=FORECAST_DAYS,
                             output_type="numpy")[0]
-        # fc shape: (n_targets, 9 quantiles, horizon). Median quantile = index 4.
-        out[member] = np.asarray(fc)[0, 4, :]
+        # fc shape: (n_targets, n_quantiles, horizon).
+        out[member] = np.asarray(fc)[0, _MEDIAN_Q, :]
         valid_time = g["timestamp"].to_numpy()
     return pd.DataFrame(out, index=pd.DatetimeIndex(valid_time, name="timestamp"))
 '''
