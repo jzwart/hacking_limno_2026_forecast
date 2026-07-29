@@ -18,9 +18,9 @@ forecast for an eventual global evaluation.
 
 | Notebook | What it does | Open in Colab |
 |---|---|---|
-| `notebooks/forecast_workshop.ipynb` | **Start here.** End-to-end forecast + submission. | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/forecast_workshop.ipynb) |
-| `notebooks/appendix_zonal_stats.ipynb` | Area-weighted covariate extraction with `xvec`. | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/appendix_zonal_stats.ipynb) |
-| `notebooks/appendix_model_deep_dive.ipynb` | Context windows + behavior with data gaps. | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/appendix_model_deep_dive.ipynb) |
+| `notebooks/forecast_workshop.ipynb` | **Start here.** End-to-end forecast + submission. | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/forecast_workshop.ipynb) &nbsp; [▶ Open](https://colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/forecast_workshop.ipynb) |
+| `notebooks/appendix_zonal_stats.ipynb` | Area-weighted covariate extraction with `xvec`. | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/appendix_zonal_stats.ipynb) &nbsp; [▶ Open](https://colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/appendix_zonal_stats.ipynb) |
+| `notebooks/appendix_model_deep_dive.ipynb` | Context windows + behavior with data gaps. | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/appendix_model_deep_dive.ipynb) &nbsp; [▶ Open](https://colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/appendix_model_deep_dive.ipynb) |
 
 ## Two ways to run
 
