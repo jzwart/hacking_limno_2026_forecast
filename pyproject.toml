@@ -1,0 +1,26 @@
+[project]
+name = "hacking-limno-2026-forecast"
+version = "0.1.0"
+description = "Zero-shot water forecasting with open weather data — AEMON-J/DSOS 2026 workshop"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "dynamical-catalog",
+    "rioxarray",
+    "cartopy",
+    "geopandas",
+    "chronos-forecasting[extras]>=2.2",
+    "tirex-2",
+    "rivretrieve @ git+https://github.com/kratzert/RivRetrieve-Python.git",
+    "matplotlib",
+    "pandas",
+    "numpy",
+    "requests",
+    "shapely",
+]
+
+[project.optional-dependencies]
+# Extras used only by appendix_zonal_stats.ipynb.
+zonal = ["xvec", "exactextract"]
+
+[tool.uv]
+# Notebooks are launched with: uv run --with jupyter jupyter lab

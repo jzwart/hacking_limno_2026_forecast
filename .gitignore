@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Notebook / workshop outputs
+forecast_*.csv
+forecast_*.metadata.json
+my_timeseries.csv
+
+# Caches
+.cache/
+~/.cache/huggingface/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
