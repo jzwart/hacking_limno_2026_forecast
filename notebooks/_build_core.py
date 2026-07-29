@@ -59,25 +59,40 @@ is not required).
 > restart loads a clean environment. This is expected: **re-run from the top**
 > after it restarts (the install is cached, so it will be quick), then continue.
 >
-> We install the **CPU build of PyTorch** first. TiRex-2 depends on `flashrnn`,
-> whose CUDA kernels require a newer GPU than Colab's free tier provides and
-> otherwise fail to build; the CPU torch build sidesteps that and is fast enough
-> for a single-site forecast. If you have a capable GPU locally, see
+> On **Linux/Colab** we install the **CPU build of PyTorch** first, from PyTorch's
+> CPU wheel index. TiRex-2 depends on `flashrnn`, whose CUDA kernels require a
+> newer GPU than Colab's free tier provides and otherwise fail to build; the CPU
+> torch build sidesteps that and is fast enough for a single-site forecast. On
+> **macOS/Windows** PyPI's torch is already CPU-only (no CUDA build to avoid), so
+> we install it from PyPI directly. If you have a capable GPU locally, see
 > `docs/local_setup.md` for the GPU path.""")
 
 code(r'''import os
+import shutil
 import subprocess
 import sys
+import platform
 
 # A disk sentinel survives the kernel restart (kernel *state* does not), so we
 # install + restart exactly once even under "Run all" / repeated top-to-bottom.
 # It is written ONLY after a fully successful install, so a failure re-runs clean.
 _SENTINEL = "/tmp/.forecast_workshop_installed"
 
+# When launched via `uv run --with jupyter jupyter lab`, the kernel runs in an
+# ephemeral uv environment that has NO pip — `python -m pip install` fails with
+# "No module named pip". Detect uv (it sets $UV and $VIRTUAL_ENV) and shell out to
+# `uv pip install --python <this-interpreter>` instead, so packages land in the
+# same env the kernel imports from. On Colab there is no uv, so we use pip.
+_UV = os.environ.get("UV") or shutil.which("uv")
+_USE_UV = bool(_UV and os.environ.get("VIRTUAL_ENV"))
+
 
 def _pip(*pkgs, extra_args=()):
-    """pip install as a subprocess so we can check the exit code and see output."""
-    cmd = [sys.executable, "-m", "pip", "install", *extra_args, *pkgs]
+    """Install packages as a subprocess so we can check the exit code and see output."""
+    if _USE_UV:
+        cmd = [_UV, "pip", "install", "--python", sys.executable, *extra_args, *pkgs]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", *extra_args, *pkgs]
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=subprocess.STDOUT)
     if result.returncode != 0:
         raise RuntimeError(
@@ -88,14 +103,24 @@ def _pip(*pkgs, extra_args=()):
 
 if not os.path.exists(_SENTINEL):
     # 1) CPU PyTorch first. This avoids compiling flashrnn's CUDA kernels (a
-    #    tirex-2 dependency) which fail to build on Colab's default GPU.
-    _pip("torch<2.10", extra_args=("--index-url", "https://download.pytorch.org/whl/cpu"))
+    #    tirex-2 dependency) which fail to build on Colab's default GPU. The CPU
+    #    wheel index only serves Linux/Windows wheels, and is only *needed* on
+    #    Linux (where plain PyPI torch would pull the CUDA build). On macOS/Windows
+    #    PyPI's torch is already CPU-only, so install from PyPI there — the CPU
+    #    index has no macOS wheels and is prone to timeouts.
+    if platform.system() == "Linux":
+        _pip("torch<2.10", extra_args=("--index-url", "https://download.pytorch.org/whl/cpu"))
+    else:
+        _pip("torch<2.10")
     # 2) numpy pinned so the heavier installs below don't half-upgrade it (the
     #    classic "cannot import name '_center' from numpy._core.umath" crash).
     _pip("numpy>=1.26,<2.1")
-    # 3) the forecasting stack.
-    _pip("dynamical-catalog", "rioxarray", "cartopy", "geopandas", "tirex-2",
-         "git+https://github.com/kratzert/RivRetrieve-Python.git")
+    # 3) the forecasting stack. `truststore` lets Python use the OS trust store
+    #    for TLS, so requests works behind TLS-inspecting corporate/institutional
+    #    proxies (e.g. USGS) that inject a self-signed root CA — otherwise every
+    #    https call fails with CERTIFICATE_VERIFY_FAILED. Harmless elsewhere.
+    _pip("truststore", "dynamical-catalog", "rioxarray", "cartopy", "geopandas",
+         "tirex-2", "git+https://github.com/kratzert/RivRetrieve-Python.git")
     open(_SENTINEL, "w").close()
 
     # On Colab, restart the runtime once so the freshly installed numpy is the
@@ -113,6 +138,16 @@ else:
 
 code(r"""import json
 import warnings
+
+# Route Python's TLS through the OS trust store so https calls (dynamical.org,
+# mghydro.com, Hugging Face) succeed behind TLS-inspecting proxies that inject a
+# self-signed root CA — the OS already trusts it, but requests' bundled certifi
+# store does not. No-op if truststore isn't installed (e.g. a plain Colab run).
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -249,8 +284,17 @@ else:
 TARGET_LAT, TARGET_LON = cfg["lat"], cfg["lon"]
 VARIABLE = cfg["variable"]
 UNITS = cfg.get("units", "")
+
+# Forecast in log space? Streamflow is strictly positive and heavily right-skewed
+# (low baseflow most days, occasional large floods), so TiRex-2 forecasts it better
+# on a log scale — the transform compresses the peaks and keeps predictions positive.
+# We use log1p/expm1, so exact zeros are fine. NOT for variables that go negative
+# (e.g. temperature in degC), so this auto-enables only for streamflow; override by
+# setting LOG_TARGET explicitly. `cfg.get("log_target")` lets a preset force it.
+LOG_TARGET = cfg.get("log_target", VARIABLE == "streamflow")
 print(f"Target: {VARIABLE} [{UNITS}] at ({TARGET_LAT}, {TARGET_LON}) "
-      f"via {TARGET_MODE}; horizon {FORECAST_DAYS} d from {INIT_TIME.date()}")
+      f"via {TARGET_MODE}; horizon {FORECAST_DAYS} d from {INIT_TIME.date()}"
+      f"{'; forecasting in log space' if LOG_TARGET else ''}")
 '''
 )
 
@@ -403,11 +447,24 @@ print(f"History rows: {len(history_df)}, target gaps: {history_df[VARIABLE].isna
 md(r"""## 5. Run the forecast with TiRex-2
 
 TiRex-2 receives the past target + past weather, plus a future weather trace per
-ensemble member, and returns one forecast trace per member — same history,
+ensemble member, and returns a **quantile forecast** per member — same history,
 different future weather.
 
+The forecast ensemble combines **two** sources of uncertainty: the spread across
+weather members *and* TiRex-2's own predictive quantiles. We keep every quantile
+(not just the median), so with 51 weather members × 9 quantiles the ensemble has
+459 traces. Weather members alone barely diverge at short lead times — most of the
+honest day-1 spread comes from the model's quantiles.
+
 - **TiRex-2** — `TimeseriesType(target, past_covariates, future_covariates)` fed
-  to `model.forecast`; returns quantiles (we take the median per member).
+  to `model.forecast`; returns 9 quantiles per member, each kept as its own trace
+  labeled `<member>_q<level>`.
+
+When `LOG_TARGET` is set (auto-enabled for streamflow in §1), the target is fed to
+the model in `log1p` space and the forecast quantiles are inverted with `expm1`
+before anything is plotted or saved — so the CSV is always in physical units. Flow
+is strictly positive and right-skewed, and forecasting the log tends to track the
+rising limb of an event better while keeping predictions non-negative.
 
 > This runs on CPU by default (no GPU needed); `device` is auto-selected below.""")
 
@@ -428,10 +485,9 @@ from tirex2 import TimeseriesType, load_model
 _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 tirex = load_model("NX-AI/TiRex-2", device=_DEVICE)
 
-# Index of the median (0.5) among the model's native quantiles — read from the
-# model rather than hardcoded, so this survives a change in quantile count.
+# The model's native quantile levels (e.g. 0.1 .. 0.9), read from the model rather
+# than hardcoded so this survives a change in quantile count.
 _Q = [round(float(q), 3) for q in tirex.quantiles.detach().cpu().numpy()]
-_MEDIAN_Q = _Q.index(0.5)
 
 # Temperature and precipitation are FUTURE-KNOWN covariates: we have both the
 # analysis over the history window and a forecast over the horizon. TiRex-2 wants
@@ -440,14 +496,22 @@ _COVS = ["temperature_2m", "precipitation_surface"]
 
 
 def run_tirex2(future_basin):
-    """One TiRex-2 (median) trace per ensemble member. Returns DataFrame [time x member].
+    """TiRex-2 traces per ensemble member. Returns DataFrame [time x <member>_q<level>].
 
-    Builds one TimeseriesType per member: a shared target history plus that
-    member's future-known weather covariates (history covariates concatenated
-    with the member's forecast covariates). Returns the median quantile.
+    Builds one TimeseriesType per weather member: a shared target history plus that
+    member's future-known weather covariates (history covariates concatenated with
+    the member's forecast covariates). The forecast ensemble combines BOTH sources
+    of uncertainty — the spread across weather members AND TiRex-2's own predictive
+    quantiles — so we keep every quantile, not just the median. With 51 weather
+    members and 9 quantiles that yields 459 traces, labeled e.g. "12_q0.9".
     """
     hist = history_df.set_index("timestamp")
     target = hist[VARIABLE].to_numpy(dtype="float32")[None, :]   # (1, context_len), NaNs ok
+    # Forecast in log space when LOG_TARGET is set (see §1). log1p keeps exact zeros
+    # finite and preserves NaNs; we invert with expm1 on the forecast below. Only
+    # the target is transformed — covariates keep their physical units.
+    if LOG_TARGET:
+        target = np.log1p(target)
     hist_cov = hist[_COVS].to_numpy(dtype="float32").T           # (n_cov, context_len)
     fut = _future_long(future_basin)
 
@@ -464,8 +528,13 @@ def run_tirex2(future_basin):
         )
         fc = tirex.forecast(timeseries=[ts], prediction_length=FORECAST_DAYS,
                             output_type="numpy")[0]
-        # fc shape: (n_targets, n_quantiles, horizon).
-        out[member] = np.asarray(fc)[0, _MEDIAN_Q, :]
+        # fc shape: (n_targets, n_quantiles, horizon). Emit every quantile as its
+        # own trace so the ensemble carries the model's forecast uncertainty too.
+        fc = np.asarray(fc)[0]                                   # (n_quantiles, horizon)
+        if LOG_TARGET:
+            fc = np.expm1(fc)                                    # back to physical units
+        for qi, q_level in enumerate(_Q):
+            out[f"{member}_q{q_level}"] = fc[qi, :]
         valid_time = g["timestamp"].to_numpy()
     return pd.DataFrame(out, index=pd.DatetimeIndex(valid_time, name="timestamp"))
 '''
@@ -494,8 +563,21 @@ over the recent observed record.""")
 code(r'''PLOT_WINDOW = slice(INIT_TIME - pd.Timedelta(days=30),
                     INIT_TIME + pd.Timedelta(days=FORECAST_DAYS))
 
+# The model's target ends at INIT_TIME - 1 day (see the history_window). Prepend
+# that last observed value to each forecast trace so the fan visibly emanates from
+# the observed line instead of floating below it — standard forecast-plot practice.
+_ANCHOR_TIME = INIT_TIME - pd.Timedelta(days=1)
+_ANCHOR_VALUE = obs.loc[:_ANCHOR_TIME].dropna().iloc[-1]
+
+
+def _with_anchor(pred):
+    """Prepend the last observed (time, value) row to every column of a forecast frame."""
+    anchor = pd.DataFrame(_ANCHOR_VALUE, index=[_ANCHOR_TIME], columns=pred.columns)
+    return pd.concat([anchor, pred])
+
 
 def plot_traces(ax, pred, color, label):
+    pred = _with_anchor(pred)
     ax.plot(pred.index, pred.values, color=color, lw=0.6, alpha=0.30)
     ax.plot(pred.index, pred.mean(axis=1), color=color, lw=3, label=f"{label} mean")
 
@@ -524,6 +606,7 @@ code(r'''# Weather-source comparison: TiRex-2 ensemble mean and 10-90% spread pe
 fig, ax = plt.subplots(figsize=(13, 5))
 by_cov = predictions["TiRex-2"]
 for cov_name, pred in by_cov.items():
+    pred = _with_anchor(pred)
     ax.plot(pred.index, pred.mean(axis=1), color=cov_colors[cov_name],
             lw=3, label=f"{cov_name} mean")
     ax.fill_between(pred.index, pred.quantile(0.1, axis=1), pred.quantile(0.9, axis=1),
@@ -567,6 +650,14 @@ metadata = {
     "forecast_days": FORECAST_DAYS,
     "models": list(MODELS),
     "covariate_sources": list(COVARIATE_SOURCES),
+    # Each `member` is a "<weather_member>_q<quantile>" trace: the ensemble carries
+    # both weather-member spread and TiRex-2's predictive quantiles.
+    "ensemble_encoding": "weather_member x tirex2_quantile",
+    "quantiles": _Q,
+    "n_traces": int(forecast_long["member"].nunique()),
+    # Predictions in the CSV are already in physical units; this records whether the
+    # model forecast in log1p space internally (predictions inverted with expm1).
+    "log_target": bool(LOG_TARGET),
     "target_mode": TARGET_MODE,
     "preset": PRESET if TARGET_MODE == "published" else None,
     "coauthor_optin": PARTICIPANT["coauthor_optin"],
