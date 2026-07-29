@@ -42,8 +42,8 @@ basin average.
 This appendix is optional and standalone; it reuses the same data sources as the
 core notebook.
 """))
-zonal.append(("code", r"""!uv pip install -q dynamical-catalog rioxarray xvec exactextract geopandas requests \
-    || pip install -q dynamical-catalog rioxarray xvec exactextract geopandas requests"""))
+zonal.append(("code", r"""# numpy pinned first so later installs don't leave a half-upgraded numpy.
+!pip install -q "numpy>=1.26,<2.1" dynamical-catalog rioxarray xvec exactextract geopandas requests"""))
 zonal.append(("code", r'''import dynamical_catalog
 import geopandas as gpd
 import pandas as pd
@@ -138,8 +138,9 @@ Two questions the core notebook glosses over:
 This is a diagnostic notebook — it deliberately runs on a single site so it stays
 fast in a live session.
 """))
-dive.append(("code", r"""!uv pip install -q 'chronos-forecasting[extras]>=2.2' tirex-2 torch numpy pandas matplotlib \
-    || pip install -q 'chronos-forecasting[extras]>=2.2' tirex-2 torch numpy pandas matplotlib"""))
+dive.append(("code", r"""# numpy pinned first so later installs don't leave a half-upgraded numpy.
+# On Colab, if a numpy ImportError appears, restart the runtime and re-run.
+!pip install -q "numpy>=1.26,<2.1" 'chronos-forecasting[extras]>=2.2' tirex-2 torch pandas matplotlib"""))
 dive.append(("code", r'''import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt

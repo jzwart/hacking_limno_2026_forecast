@@ -53,18 +53,42 @@ because it is fast; plain `pip install` also works if `uv` is unavailable.
 
 *Optional:* set a Hugging Face token as the Colab secret `HF_TOKEN` to avoid
 occasional rate limits when downloading model weights (the models are public, so
-this is not required).""")
+this is not required).
 
-code(r"""!uv pip install -q \
-    dynamical-catalog rioxarray cartopy geopandas \
-    'chronos-forecasting[extras]>=2.2' \
-    tirex-2 \
-    git+https://github.com/kratzert/RivRetrieve-Python.git \
-    || pip install -q \
-    dynamical-catalog rioxarray cartopy geopandas \
-    'chronos-forecasting[extras]>=2.2' \
-    tirex-2 \
-    git+https://github.com/kratzert/RivRetrieve-Python.git""")
+> ⚠️ **On Colab the runtime restarts once, automatically, after this cell.** The
+> install changes `numpy`, and Colab has already imported the old one — the
+> restart loads a clean environment. This is expected: **re-run from the top**
+> after it restarts (the install is cached, so it will be quick), then continue.""")
+
+code(r'''import os
+
+# A disk sentinel survives the kernel restart (kernel *state* does not), so we
+# install + restart exactly once even under "Run all" / repeated top-to-bottom.
+_SENTINEL = "/tmp/.forecast_workshop_installed"
+
+if not os.path.exists(_SENTINEL):
+    # Install the forecasting stack. numpy is pinned so pulling in the model
+    # libraries doesn't leave a half-upgraded numpy (the classic
+    # "cannot import name '_center' from numpy._core.umath" error).
+    !pip install -q "numpy>=1.26,<2.1" \
+        dynamical-catalog rioxarray cartopy geopandas \
+        'chronos-forecasting[extras]>=2.2' \
+        tirex-2 \
+        git+https://github.com/kratzert/RivRetrieve-Python.git
+    open(_SENTINEL, "w").close()
+
+    # On Colab, restart the runtime once so the freshly installed numpy is the
+    # one that gets imported. Re-run from the top after the restart.
+    try:
+        import google.colab  # noqa: F401
+        import IPython
+        print("Install complete — restarting the Colab runtime. "
+              "Re-run from the top when it comes back.")
+        IPython.Application.instance().kernel.do_shutdown(restart=True)
+    except ImportError:
+        print("Local run — no restart needed; continue to the next cell.")
+else:
+    print("Dependencies already installed — skipping install and restart.")''')
 
 code(r"""import json
 import warnings
