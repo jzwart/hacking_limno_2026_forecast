@@ -8,7 +8,6 @@ dependencies = [
     "rioxarray",
     "cartopy",
     "geopandas",
-    "chronos-forecasting[extras]>=2.2",
     "tirex-2",
     "rivretrieve @ git+https://github.com/kratzert/RivRetrieve-Python.git",
     "matplotlib",

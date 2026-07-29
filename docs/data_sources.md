@@ -12,8 +12,8 @@ A CSV with at least two columns:
 | a date/time column | first column; anything `pandas.to_datetime` can parse |
 | a numeric value column | first numeric column after the time column |
 
-The notebook resamples to **daily** and keeps gaps as `NaN` — both models
-forecast from an incomplete history. Also set `UPLOAD_META` (site lat/lon and
+The notebook resamples to **daily** and keeps gaps as `NaN` — TiRex-2 forecasts
+from an incomplete history. Also set `UPLOAD_META` (site lat/lon and
 `location_mode`) so the weather covariates are drawn from the right place.
 
 ## Streamflow — published

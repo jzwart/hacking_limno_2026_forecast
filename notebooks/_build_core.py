@@ -27,10 +27,10 @@ Workshop: *How to access petabytes of weather forecasts from your laptop*
 
 You will generate a short-range forecast of a **water variable** — streamflow,
 stream temperature, lake temperature, or **your own uploaded timeseries** — using
-two zero-shot time-series foundation models, [Chronos-2](https://huggingface.co/amazon/chronos-2)
-and [TiRex-2](https://github.com/NX-AI/tirex-2), conditioned on open ensemble
-weather forecasts from [dynamical.org](https://dynamical.org). At the end you
-**submit** your forecast for an eventual global evaluation.
+[TiRex-2](https://github.com/NX-AI/tirex-2), a zero-shot time-series foundation
+model, conditioned on open ensemble weather forecasts from
+[dynamical.org](https://dynamical.org). At the end you **submit** your forecast
+for an eventual global evaluation.
 
 > **Run it as-is first.** With no edits, this notebook reproduces a working
 > forecast for the River Thames at Kingston. Then change the single **config
@@ -48,12 +48,11 @@ weather forecasts from [dynamical.org](https://dynamical.org). At the end you
 # ---------------------------------------------------------------- install
 md(r"""## 0. Setup
 
-Installs the forecasting stack. On Colab this takes ~1–2 min. `uv pip` is used
-because it is fast; plain `pip install` also works if `uv` is unavailable.
+Installs the forecasting stack. On Colab this takes ~1–2 min.
 
 *Optional:* set a Hugging Face token as the Colab secret `HF_TOKEN` to avoid
-occasional rate limits when downloading model weights (the models are public, so
-this is not required).
+occasional rate limits when downloading model weights (TiRex-2 is public, so this
+is not required).
 
 > ⚠️ **On Colab the runtime restarts once, automatically, after this cell.** The
 > install changes `numpy`, and Colab has already imported the old one — the
@@ -90,14 +89,12 @@ def _pip(*pkgs, extra_args=()):
 if not os.path.exists(_SENTINEL):
     # 1) CPU PyTorch first. This avoids compiling flashrnn's CUDA kernels (a
     #    tirex-2 dependency) which fail to build on Colab's default GPU.
-    _pip("torch<2.10", "torchvision",
-         extra_args=("--index-url", "https://download.pytorch.org/whl/cpu"))
+    _pip("torch<2.10", extra_args=("--index-url", "https://download.pytorch.org/whl/cpu"))
     # 2) numpy pinned so the heavier installs below don't half-upgrade it (the
     #    classic "cannot import name '_center' from numpy._core.umath" crash).
     _pip("numpy>=1.26,<2.1")
     # 3) the forecasting stack.
-    _pip("dynamical-catalog", "rioxarray", "cartopy", "geopandas",
-         "chronos-forecasting[extras]>=2.2", "tirex-2",
+    _pip("dynamical-catalog", "rioxarray", "cartopy", "geopandas", "tirex-2",
          "git+https://github.com/kratzert/RivRetrieve-Python.git")
     open(_SENTINEL, "w").close()
 
@@ -149,7 +146,7 @@ to point at other gauges / sources.
 ### Option B — bring your own data
 Set `TARGET_MODE = "upload"`, then run the upload cell. Your CSV needs two
 columns: a date/timestamp column and a numeric value column. Gaps are fine —
-both models forecast from an incomplete history (we explore this in
+TiRex-2 forecasts from an incomplete history (we explore this in
 `appendix_model_deep_dive.ipynb`).""")
 
 code(r'''# ============================ EDIT HERE ============================
@@ -331,7 +328,7 @@ ax.set_title(f"Observed {VARIABLE}")
 md(r"""## 4. Weather covariates from dynamical.org
 
 We average temperature and precipitation over the contributing area:
-past values from the **NOAA GEFS analysis** (the history the models see) and
+past values from the **NOAA GEFS analysis** (the history the model sees) and
 **15-day ensemble forecasts** from both **NOAA GEFS** (31 members) and
 **ECMWF IFS ENS** (51 members). Each ensemble member becomes one plausible future.
 
@@ -339,11 +336,10 @@ past values from the **NOAA GEFS analysis** (the history the models see) and
 > `https://stac.dynamical.org/catalog.json` is designed to be AI-friendly — point
 > an LLM at it to discover datasets.""")
 
-code(r'''# Load Chronos-2 first so we can size the history window to its context window.
-from chronos import BaseChronosPipeline
-
-chronos = BaseChronosPipeline.from_pretrained("amazon/chronos-2", device_map="auto")
-HISTORY_DAYS = chronos.model_context_length // 3  # 1 target + 2 covariates per day
+code(r'''# How much past history to feed the model. ~6 years of daily values is plenty of
+# seasonal context for TiRex-2 while keeping the dynamical.org pull modest; lower
+# this on a slow connection (see docs/local_setup.md).
+HISTORY_DAYS = 365 * 6
 history_window = slice(INIT_TIME - pd.Timedelta(days=HISTORY_DAYS),
                        INIT_TIME - pd.Timedelta(days=1))
 print(f"History window: {history_window.start.date()} -> {history_window.stop.date()} "
@@ -403,19 +399,17 @@ print(f"History rows: {len(history_df)}, target gaps: {history_df[VARIABLE].isna
 '''
 )
 
-# ---------------------------------------------------------------- models
-md(r"""## 5. Run both models side by side
+# ---------------------------------------------------------------- model
+md(r"""## 5. Run the forecast with TiRex-2
 
-Both models receive the **same** inputs: the past target + past weather, and a
-future weather trace per ensemble member. Each returns one forecast trace per
-member. We wrap each model behind a common signature so they are interchangeable.
+TiRex-2 receives the past target + past weather, plus a future weather trace per
+ensemble member, and returns one forecast trace per member — same history,
+different future weather.
 
-- **Chronos-2** — `predict_df` with a `future_df` of known-future covariates.
 - **TiRex-2** — `TimeseriesType(target, past_covariates, future_covariates)` fed
   to `model.forecast`; returns quantiles (we take the median per member).
 
-> On a CPU-only machine both still run; set `device="cpu"` for TiRex-2 (done
-> automatically below when no GPU is present) and expect a slower Section 5.""")
+> This runs on CPU by default (no GPU needed); `device` is auto-selected below.""")
 
 code(r'''def _future_long(future_basin):
     """dynamical forecast DataArray -> long DataFrame [member,timestamp,temp,precip]."""
@@ -425,19 +419,6 @@ code(r'''def _future_long(future_basin):
         [["member", "timestamp", "temperature_2m", "precipitation_surface"]]
         .astype({"member": str})
     )
-
-
-def run_chronos2(future_basin):
-    """One Chronos-2 trace per ensemble member. Returns DataFrame [time x member]."""
-    members = future_basin["ensemble_member"].astype(str).values
-    context = pd.concat([history_df.assign(member=m) for m in members], ignore_index=True)
-    future = _future_long(future_basin)
-    pred = chronos.predict_df(
-        context, future_df=future,
-        prediction_length=FORECAST_DAYS, quantile_levels=[0.5],
-        id_column="member", timestamp_column="timestamp", target=VARIABLE,
-    )
-    return pred.pivot(index="timestamp", columns="member", values="predictions")
 '''
 )
 
@@ -490,7 +471,7 @@ def run_tirex2(future_basin):
 '''
 )
 
-code(r'''MODELS = {"Chronos-2": run_chronos2, "TiRex-2": run_tirex2}
+code(r'''MODELS = {"TiRex-2": run_tirex2}
 COVARIATE_SOURCES = {"GEFS": gefs_fc_basin, "IFS ENS": ifs_fc_basin}
 
 # predictions[model][covariate_source] -> DataFrame [valid_time x member]
@@ -507,8 +488,8 @@ print("Done.")
 # ---------------------------------------------------------------- plots
 md(r"""## 6. Forecast plots
 
-Ensemble spread (thin lines) and ensemble mean (thick) for each model and weather
-source, over the recent observed record.""")
+Ensemble spread (thin lines) and ensemble mean (thick) for each weather source,
+over the recent observed record.""")
 
 code(r'''PLOT_WINDOW = slice(INIT_TIME - pd.Timedelta(days=30),
                     INIT_TIME + pd.Timedelta(days=FORECAST_DAYS))
@@ -539,18 +520,16 @@ fig.tight_layout()
 '''
 )
 
-code(r'''# Model comparison: ensemble mean of each model (pooled across weather sources).
+code(r'''# Weather-source comparison: TiRex-2 ensemble mean and 10-90% spread per source.
 fig, ax = plt.subplots(figsize=(13, 5))
-model_colors = {"Chronos-2": "tab:purple", "TiRex-2": "tab:orange"}
-for model_name, by_cov in predictions.items():
-    pooled = pd.concat(by_cov.values(), axis=1)
-    ax.plot(pooled.index, pooled.mean(axis=1), color=model_colors[model_name],
-            lw=3, label=f"{model_name} mean")
-    ax.fill_between(pooled.index, pooled.quantile(0.1, axis=1),
-                    pooled.quantile(0.9, axis=1),
-                    color=model_colors[model_name], alpha=0.15)
+by_cov = predictions["TiRex-2"]
+for cov_name, pred in by_cov.items():
+    ax.plot(pred.index, pred.mean(axis=1), color=cov_colors[cov_name],
+            lw=3, label=f"{cov_name} mean")
+    ax.fill_between(pred.index, pred.quantile(0.1, axis=1), pred.quantile(0.9, axis=1),
+                    color=cov_colors[cov_name], alpha=0.15)
 plot_obs_and_init(ax)
-ax.set_title(f"Model comparison — Chronos-2 vs TiRex-2 (all members)")
+ax.set_title("TiRex-2 forecast — GEFS vs IFS ENS weather (ensemble mean, 10–90%)")
 '''
 )
 
@@ -614,8 +593,8 @@ else:
 
 md(r"""## Where to go next
 - `appendix_zonal_stats.ipynb` — area-weighted covariate extraction with `xvec`.
-- `appendix_model_deep_dive.ipynb` — how Chronos-2 and TiRex-2 behave with gaps in
-  the target history, and how their context windows differ.
+- `appendix_model_deep_dive.ipynb` — how TiRex-2 behaves with gaps in the target
+  history, and how covariates change the forecast.
 - Swap the fetcher / gauge in Section 1 to forecast a different river; see
   `docs/data_sources.md` for options.""")
 

@@ -45,14 +45,14 @@ can **skip the `!uv pip install` cell** at the top of each notebook.
 - **Model weights** download once from Hugging Face and are cached under
   `~/.cache/huggingface`. The first run is the slow one; later runs reuse the cache.
 - **Shrink the context.** In the core notebook, a smaller history window means
-  less weather data to pull from dynamical.org. Chronos-2 sizes its own window,
-  but you can trim `INIT_TIME - history` by editing `HISTORY_DAYS`.
+  less weather data to pull from dynamical.org. Lower `HISTORY_DAYS` (default
+  ~6 years) to speed up the covariate step.
 - **CPU is fine.** No GPU required. TiRex-2 auto-selects `device="cpu"` when no
   CUDA GPU is present; Section 5 just runs slower.
 - **Fewer ensemble members.** For a quick test, subset `gefs_fc_basin` /
   `ifs_fc_basin` to a handful of `ensemble_member`s before Section 5.
 - **Optional HF token.** Setting `HF_TOKEN` in your environment avoids occasional
-  download rate limits, but the models are public so it is not required.
+  download rate limits, but TiRex-2 is public so it is not required.
 
 ## GPU vs CPU for TiRex-2
 The notebook installs the **CPU build of PyTorch** on purpose. TiRex-2 depends on

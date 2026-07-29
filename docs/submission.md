@@ -17,7 +17,7 @@ Tidy long format — one row per model × weather source × ensemble member × d
 | `valid_time` | date | the day being forecast |
 | `member` | string | ensemble member id (weather-driven) |
 | `prediction` | float | forecast value in the target's units |
-| `model` | string | `Chronos-2` or `TiRex-2` |
+| `model` | string | `TiRex-2` |
 | `covariate_source` | string | `GEFS` or `IFS ENS` |
 
 ## Metadata file schema (`.metadata.json`)
@@ -30,7 +30,7 @@ Tidy long format — one row per model × weather source × ensemble member × d
   "location": {"lat": 51.4155, "lon": -0.3076, "location_mode": "delineate"},
   "init_time": "2026-01-08",
   "forecast_days": 15,
-  "models": ["Chronos-2", "TiRex-2"],
+  "models": ["TiRex-2"],
   "covariate_sources": ["GEFS", "IFS ENS"],
   "target_mode": "published",
   "preset": "thames_streamflow",
@@ -51,7 +51,7 @@ even if someone skips the JSON file:
    lake temperature / other)
 6. **Site latitude** and **Site longitude** (short answer)
 7. **Forecast init date** (date)
-8. **Models used** (checkboxes: Chronos-2 / TiRex-2)
+8. **Model used** (short answer; defaults to TiRex-2)
 9. **Forecast file** (file upload — accept `.csv`)
 10. **Metadata file** (file upload — accept `.json`)
 11. **Co-authorship consent** (checkbox, opt-in):

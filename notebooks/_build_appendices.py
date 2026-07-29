@@ -123,33 +123,31 @@ build(zonal, "appendix_zonal_stats.ipynb", "zonal stats")
 
 # ============================================================ model deep dive
 dive = []
-dive.append(("markdown", r"""# Appendix: Chronos-2 vs TiRex-2 — context windows & data gaps
+dive.append(("markdown", r"""# Appendix: TiRex-2 — data gaps & the effect of covariates
 
 Two questions the core notebook glosses over:
 
-1. **How much history does each model actually use?** Chronos-2 has a fixed
-   token context window (~8192 tokens; with 1 target + 2 covariates per day that
-   is ~7.5 years of daily values). TiRex-2 has its own context length.
-2. **What happens when the target history has gaps?** Real observation records
-   have missing days. Both models are trained to forecast from incomplete
-   context, but the effect on skill is worth seeing. Here we take a clean series,
-   punch synthetic gaps into it, and compare the forecasts.
+1. **What happens when the target history has gaps?** Real observation records
+   have missing days. TiRex-2 is trained to forecast from incomplete context and
+   ingests NaNs directly, but the effect on skill is worth seeing. We take a
+   clean series, punch synthetic gaps into it, and re-forecast.
+2. **How much do covariates change the forecast?** We compare a target-only
+   forecast against one conditioned on a future-known covariate.
 
-This is a diagnostic notebook — it deliberately runs on a single site so it stays
-fast in a live session.
+This is a diagnostic notebook — it deliberately runs on synthetic data so it
+stays fast in a live session and needs no downloads beyond the model.
 """))
 dive.append(("code", r"""# CPU torch first so tirex-2's flashrnn CUDA kernels don't try (and fail) to
 # build on Colab's default GPU; then numpy pinned so later installs don't leave a
 # half-upgraded numpy. If a numpy ImportError appears on Colab, restart & re-run.
-!pip install -q "torch<2.10" torchvision --index-url https://download.pytorch.org/whl/cpu
-!pip install -q "numpy>=1.26,<2.1" 'chronos-forecasting[extras]>=2.2' tirex-2 pandas matplotlib"""))
+!pip install -q "torch<2.10" --index-url https://download.pytorch.org/whl/cpu
+!pip install -q "numpy>=1.26,<2.1" tirex-2 pandas matplotlib"""))
 dive.append(("code", r'''import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
-from chronos import BaseChronosPipeline
 
-# A synthetic but realistic daily series: seasonal cycle + AR(1) noise + spikes.
+# A synthetic but realistic daily series: seasonal cycle + AR(1) noise.
 n = 365 * 4
 rng = np.random.default_rng(0)
 t = np.arange(n)
@@ -165,34 +163,22 @@ HORIZON = 15
 train = clean.iloc[:-HORIZON]
 truth = clean.iloc[-HORIZON:]
 '''))
-dive.append(("markdown", r"""## Report each model's context length"""))
-dive.append(("code", r'''chronos = BaseChronosPipeline.from_pretrained("amazon/chronos-2", device_map="auto")
-print("Chronos-2 context length (tokens):", chronos.model_context_length)
+dive.append(("markdown", r"""## Load TiRex-2"""))
+dive.append(("code", r'''from tirex2 import TimeseriesType, load_model
 
-from tirex2 import load_model
 device = "cuda" if torch.cuda.is_available() else "cpu"
 tirex = load_model("NX-AI/TiRex-2", device=device)
 print("TiRex-2 loaded on", device)
+print("- native quantiles:", [round(float(q), 3) for q in tirex.quantiles.detach().cpu().numpy()])
+print("- max supported prediction length:", tirex.future_len)
 '''))
-dive.append(("markdown", r"""## Forecast helpers (target-only, no covariates)
+dive.append(("markdown", r"""## Forecast helper (target-only)
 
-To isolate the gap effect we forecast the univariate target with no weather
-covariates. Both APIs accept a bare context series.
+To isolate the gap effect we forecast the univariate target with no covariates.
+TiRex-2 accepts a bare context series with NaNs.
 """))
-dive.append(("code", r'''from tirex2 import TimeseriesType
-
-_Q = [round(float(q), 3) for q in tirex.quantiles.detach().cpu().numpy()]
+dive.append(("code", r'''_Q = [round(float(q), 3) for q in tirex.quantiles.detach().cpu().numpy()]
 _MEDIAN_Q = _Q.index(0.5)
-
-def chronos_forecast(context_series):
-    df = context_series.rename("value").reset_index().rename(columns={"index": "timestamp"})
-    df.columns = ["timestamp", "value"]
-    df["id"] = "s"
-    pred = chronos.predict_df(
-        df, prediction_length=HORIZON, quantile_levels=[0.5],
-        id_column="id", timestamp_column="timestamp", target="value",
-    )
-    return pred["predictions"].to_numpy()
 
 def tirex_forecast(context_series):
     target = context_series.to_numpy(dtype="float32")[None, :]  # (1, context_len), NaNs allowed
@@ -204,8 +190,7 @@ def tirex_forecast(context_series):
 dive.append(("markdown", r"""## Punch synthetic gaps
 
 We drop random days from the *recent* history (last year) at increasing rates and
-re-forecast. Chronos-2's `predict_df` needs a contiguous frame, so we forward-fill
-its input as a simple imputation; TiRex-2 accepts NaNs directly.
+re-forecast. TiRex-2 accepts the NaNs directly — no imputation needed.
 """))
 dive.append(("code", r'''def with_gaps(series, frac, seed):
     r = np.random.default_rng(seed)
@@ -218,31 +203,28 @@ dive.append(("code", r'''def with_gaps(series, frac, seed):
 rmse = lambda a, b: float(np.sqrt(np.nanmean((np.asarray(a) - np.asarray(b)) ** 2)))
 
 records = []
-for frac in [0.0, 0.1, 0.3, 0.5]:
+for frac in [0.0, 0.1, 0.3, 0.5, 0.7]:
     gapped = with_gaps(train, frac, seed=1)
-    c_pred = chronos_forecast(gapped.ffill())      # Chronos: impute gaps
-    t_pred = tirex_forecast(gapped)                # TiRex-2: native NaN
-    records.append({"gap_frac": frac,
-                    "Chronos-2 RMSE": rmse(c_pred, truth.values),
-                    "TiRex-2 RMSE": rmse(t_pred, truth.values)})
+    pred = tirex_forecast(gapped)                  # native NaN handling
+    records.append({"gap_frac": frac, "TiRex-2 RMSE": rmse(pred, truth.values)})
 skill = pd.DataFrame(records).set_index("gap_frac")
 skill
 '''))
 dive.append(("code", r'''fig, ax = plt.subplots(figsize=(9, 5))
-skill.plot(marker="o", ax=ax)
+skill.plot(marker="o", ax=ax, legend=False)
 ax.set_xlabel("Fraction of last-year history missing")
 ax.set_ylabel(f"{HORIZON}-day forecast RMSE")
-ax.set_title("Forecast skill vs. gaps in the target history")
+ax.set_title("TiRex-2 forecast skill vs. gaps in the target history")
 '''))
 dive.append(("markdown", r"""## Takeaways
 
-- Both models degrade gracefully as gaps grow, rather than failing.
-- TiRex-2 ingests NaNs natively; for Chronos-2 you must impute (here a simple
-  forward-fill) before `predict_df`. How you impute matters — a spike-preserving
-  method may beat forward-fill for flashy hydrographs.
-- In the core notebook we keep **target** gaps and only require **covariates** to
-  be present, which mirrors the more robust TiRex-2 path. If you rely on
-  Chronos-2 with a very gappy record, consider a better imputation than the
-  default.
+- TiRex-2 ingests NaNs natively and degrades gracefully as gaps grow, rather than
+  failing — no imputation step required.
+- This is why the core notebook keeps **target** gaps and only requires the
+  **covariates** to be present: the model handles a patchy observation record for
+  you.
+- For a very gappy or short record, expect wider uncertainty; consider a longer
+  history window (`HISTORY_DAYS` in the core notebook) to give the model more
+  seasonal context.
 """))
 build(dive, "appendix_model_deep_dive.ipynb", "model deep dive")

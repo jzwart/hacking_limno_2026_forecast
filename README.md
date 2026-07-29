@@ -5,11 +5,11 @@ Workshop materials for **AEMON-J / DSOS "Hacking Limnology" 2026 — Day 2: Clim
 laptop* — Jake Zwart (USGS) & Alden Keefe Sampson (Dynamical).
 
 You generate a short-range forecast of a **water variable** — streamflow, stream
-temperature, lake temperature, or **your own uploaded timeseries** — using two
-zero-shot time-series foundation models ([Chronos-2](https://huggingface.co/amazon/chronos-2)
-and [TiRex-2](https://github.com/NX-AI/tirex-2)) driven by open ensemble weather
-forecasts from [dynamical.org](https://dynamical.org). Then you **submit** your
-forecast for an eventual global evaluation.
+temperature, lake temperature, or **your own uploaded timeseries** — using
+[TiRex-2](https://github.com/NX-AI/tirex-2), a zero-shot time-series foundation
+model, driven by open ensemble weather forecasts from
+[dynamical.org](https://dynamical.org). Then you **submit** your forecast for an
+eventual global evaluation.
 
 > Run it once with no edits and it reproduces a working forecast for the River
 > Thames at Kingston. Then edit a single config block to forecast *your* site.
