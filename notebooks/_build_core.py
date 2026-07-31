@@ -27,14 +27,14 @@ Workshop: *How to access petabytes of weather forecasts from your laptop*
 
 You will generate a short-range forecast of a **water variable** — streamflow,
 stream temperature, lake temperature, or **your own uploaded timeseries** — using
-[TiRex-2](https://github.com/NX-AI/tirex-2), a zero-shot time-series foundation
-model, conditioned on open ensemble weather forecasts from
+[Chronos-2](https://huggingface.co/amazon/chronos-2), a zero-shot time-series
+foundation model, conditioned on open ensemble weather forecasts from
 [dynamical.org](https://dynamical.org). At the end you **submit** your forecast
 for an eventual global evaluation.
 
 > **Run it as-is first.** With no edits, this notebook reproduces a working
-> forecast for the River Thames at Kingston. Then change the single **config
-> block** in Section 1 to forecast *your* site.
+> forecast for the Delaware River at Montague, NJ (USGS-01438500). Then change the
+> single **config block** in Section 1 to forecast *your* site.
 
 ### How to run
 - **Google Colab (recommended):** click the badge in the README, or open this
@@ -51,7 +51,7 @@ md(r"""## 0. Setup
 Installs the forecasting stack. On Colab this takes ~1–2 min.
 
 *Optional:* set a Hugging Face token as the Colab secret `HF_TOKEN` to avoid
-occasional rate limits when downloading model weights (TiRex-2 is public, so this
+occasional rate limits when downloading model weights (Chronos-2 is public, so this
 is not required).
 
 > ⚠️ **On Colab the runtime restarts once, automatically, after this cell.** The
@@ -60,12 +60,10 @@ is not required).
 > after it restarts (the install is cached, so it will be quick), then continue.
 >
 > On **Linux/Colab** we install the **CPU build of PyTorch** first, from PyTorch's
-> CPU wheel index. TiRex-2 depends on `flashrnn`, whose CUDA kernels require a
-> newer GPU than Colab's free tier provides and otherwise fail to build; the CPU
-> torch build sidesteps that and is fast enough for a single-site forecast. On
-> **macOS/Windows** PyPI's torch is already CPU-only (no CUDA build to avoid), so
-> we install it from PyPI directly. If you have a capable GPU locally, see
-> `docs/local_setup.md` for the GPU path.""")
+> CPU wheel index, so the heavier installs below don't pull the large CUDA build
+> (a single-site forecast runs fine on CPU). On **macOS/Windows** PyPI's torch is
+> already CPU-only, so we install it from PyPI directly. If you have a capable GPU
+> locally, see `docs/local_setup.md` for the GPU path.""")
 
 code(r'''import os
 import shutil
@@ -102,12 +100,12 @@ def _pip(*pkgs, extra_args=()):
 
 
 if not os.path.exists(_SENTINEL):
-    # 1) CPU PyTorch first. This avoids compiling flashrnn's CUDA kernels (a
-    #    tirex-2 dependency) which fail to build on Colab's default GPU. The CPU
-    #    wheel index only serves Linux/Windows wheels, and is only *needed* on
-    #    Linux (where plain PyPI torch would pull the CUDA build). On macOS/Windows
-    #    PyPI's torch is already CPU-only, so install from PyPI there — the CPU
-    #    index has no macOS wheels and is prone to timeouts.
+    # 1) CPU PyTorch first, so the heavier installs below don't pull the large CUDA
+    #    build (a single-site forecast runs fine on CPU). The CPU wheel index only
+    #    serves Linux/Windows wheels, and is only *needed* on Linux (where plain
+    #    PyPI torch would pull the CUDA build). On macOS/Windows PyPI's torch is
+    #    already CPU-only, so install from PyPI there — the CPU index has no macOS
+    #    wheels and is prone to timeouts.
     if platform.system() == "Linux":
         _pip("torch<2.10", extra_args=("--index-url", "https://download.pytorch.org/whl/cpu"))
     else:
@@ -119,8 +117,11 @@ if not os.path.exists(_SENTINEL):
     #    for TLS, so requests works behind TLS-inspecting corporate/institutional
     #    proxies (e.g. USGS) that inject a self-signed root CA — otherwise every
     #    https call fails with CERTIFICATE_VERIFY_FAILED. Harmless elsewhere.
+    #    chronos-forecasting[extras] pulls transformers; installing CPU torch first
+    #    (above) keeps it from dragging in a CUDA torch build.
     _pip("truststore", "dynamical-catalog", "rioxarray", "cartopy", "geopandas",
-         "tirex-2", "git+https://github.com/kratzert/RivRetrieve-Python.git")
+         "chronos-forecasting[extras]>=2.2",
+         "git+https://github.com/kratzert/RivRetrieve-Python.git")
     open(_SENTINEL, "w").close()
 
     # On Colab, restart the runtime once so the freshly installed numpy is the
@@ -175,21 +176,23 @@ your own timeseries. Everything downstream reads from this block.
 
 ### Option A — a published preset
 Set `TARGET_MODE = "published"` and choose a `PRESET` key below. The default
-`thames_streamflow` reproduces the reference forecast. Commented presets show how
-to point at other gauges / sources.
+`delaware_streamflow` (Delaware River at Montague, NJ) reproduces the reference
+forecast. Commented presets show how to point at other gauges / sources.
 
 ### Option B — bring your own data
 Set `TARGET_MODE = "upload"`, then run the upload cell. Your CSV needs two
 columns: a date/timestamp column and a numeric value column. Gaps are fine —
-TiRex-2 forecasts from an incomplete history (we explore this in
+Chronos-2 forecasts from an incomplete history (we explore this in
 `appendix_model_deep_dive.ipynb`).""")
 
 code(r'''# ============================ EDIT HERE ============================
-TARGET_MODE = "published"      # "published"  or  "upload"
-PRESET = "thames_streamflow"   # used only when TARGET_MODE == "published"
+TARGET_MODE = "published"          # "published"  or  "upload"
+PRESET = "delaware_streamflow"     # used only when TARGET_MODE == "published"
 
-INIT_TIME = pd.Timestamp("2026-01-08")  # forecast issue date (t0)
-FORECAST_DAYS = 15                       # horizon
+# Forecast issue date (t0). Defaults to today; set an explicit date to reproduce a
+# past run, e.g. INIT_TIME = pd.Timestamp("2026-01-08").
+INIT_TIME = pd.Timestamp.today().normalize()
+FORECAST_DAYS = 10                       # horizon
 
 # --- your details, baked into the submission file (see Section 7) ---
 PARTICIPANT = {
@@ -206,23 +209,24 @@ PARTICIPANT = {
 #   location_mode: "delineate" (point -> upstream basin, for rivers)
 #                  "buffer"    (point -> square box, for lakes/points)
 PRESETS = {
-    # --- default: reference forecast, reproduces the example notebook ---
-    "thames_streamflow": {
+    # --- default: Delaware River at Montague, NJ (USGS-01438500) ---
+    "delaware_streamflow": {
         "variable": "streamflow",
         "units": "m3/s",
-        "source": "rivretrieve:UKEAFetcher",
-        "gauge_id": "8496ce69-482c-406a-a2f0-ac418ef8f099",
+        "source": "rivretrieve:USAFetcher",
+        "gauge_id": "01438500",          # USGS site number
         "rr_variable": "discharge_daily_mean",
-        "lat": 51.4155, "lon": -0.3076,
+        "lat": 41.3123, "lon": -74.7960,
         "location_mode": "delineate",
     },
-    # --- US streamflow via RivRetrieve USGS fetcher (uncomment & edit) ---
-    # "usgs_streamflow": {
-    #     "variable": "streamflow", "units": "m3/s",
-    #     "source": "rivretrieve:USAFetcher",
-    #     "gauge_id": "06892350",          # a USGS site number
+    # --- backup: Thames at Kingston, UK (reproduces the original reference) ---
+    # "thames_streamflow": {
+    #     "variable": "streamflow",
+    #     "units": "m3/s",
+    #     "source": "rivretrieve:UKEAFetcher",
+    #     "gauge_id": "8496ce69-482c-406a-a2f0-ac418ef8f099",
     #     "rr_variable": "discharge_daily_mean",
-    #     "lat": 39.05, "lon": -94.60,
+    #     "lat": 51.4155, "lon": -0.3076,
     #     "location_mode": "delineate",
     # },
     # --- lake surface temperature: easiest path is CSV upload ---------
@@ -285,8 +289,14 @@ TARGET_LAT, TARGET_LON = cfg["lat"], cfg["lon"]
 VARIABLE = cfg["variable"]
 UNITS = cfg.get("units", "")
 
+# EFI Ecological Forecasting Initiative standard identifiers for the export in §7.
+# PROJECT_ID names the challenge/collection; DURATION is the ISO 8601 timestep of the
+# forecast (P1D = daily). These land in every row of the standardized forecast file.
+PROJECT_ID = "hacking_limno_2026"
+DURATION = "P1D"
+
 # Forecast in log space? Streamflow is strictly positive and heavily right-skewed
-# (low baseflow most days, occasional large floods), so TiRex-2 forecasts it better
+# (low baseflow most days, occasional large floods), so Chronos-2 forecasts it better
 # on a log scale — the transform compresses the peaks and keeps predictions positive.
 # We use log1p/expm1, so exact zeros are fine. NOT for variables that go negative
 # (e.g. temperature in degC), so this auto-enables only for streamflow; override by
@@ -381,7 +391,7 @@ past values from the **NOAA GEFS analysis** (the history the model sees) and
 > an LLM at it to discover datasets.""")
 
 code(r'''# How much past history to feed the model. ~6 years of daily values is plenty of
-# seasonal context for TiRex-2 while keeping the dynamical.org pull modest; lower
+# seasonal context for Chronos-2 while keeping the dynamical.org pull modest; lower
 # this on a slow connection (see docs/local_setup.md).
 HISTORY_DAYS = 365 * 6
 history_window = slice(INIT_TIME - pd.Timedelta(days=HISTORY_DAYS),
@@ -444,21 +454,22 @@ print(f"History rows: {len(history_df)}, target gaps: {history_df[VARIABLE].isna
 )
 
 # ---------------------------------------------------------------- model
-md(r"""## 5. Run the forecast with TiRex-2
+md(r"""## 5. Run the forecast with Chronos-2
 
-TiRex-2 receives the past target + past weather, plus a future weather trace per
+Chronos-2 receives the past target + past weather, plus a future weather trace per
 ensemble member, and returns a **quantile forecast** per member — same history,
 different future weather.
 
 The forecast ensemble combines **two** sources of uncertainty: the spread across
-weather members *and* TiRex-2's own predictive quantiles. We keep every quantile
-(not just the median), so with 51 weather members × 9 quantiles the ensemble has
-459 traces. Weather members alone barely diverge at short lead times — most of the
+weather members *and* Chronos-2's own predictive quantiles. We keep every quantile
+(not just the median), so with 51 weather members × 3 quantiles the ensemble has
+153 traces. Weather members alone barely diverge at short lead times — most of the
 honest day-1 spread comes from the model's quantiles.
 
-- **TiRex-2** — `TimeseriesType(target, past_covariates, future_covariates)` fed
-  to `model.forecast`; returns 9 quantiles per member, each kept as its own trace
-  labeled `<member>_q<level>`.
+- **Chronos-2** — `predict_df(context_df, future_df=..., quantile_levels=...)`;
+  covariates are passed as known-future values in `future_df`, and it returns one
+  column per requested quantile. We keep each quantile as its own trace labeled
+  `<member>_q<level>`.
 
 When `LOG_TARGET` is set (auto-enabled for streamflow in §1), the target is fed to
 the model in `log1p` space and the forecast quantiles are inverted with `expm1`
@@ -480,67 +491,72 @@ code(r'''def _future_long(future_basin):
 )
 
 code(r'''import torch
-from tirex2 import TimeseriesType, load_model
+from chronos import Chronos2Pipeline
 
 _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-tirex = load_model("NX-AI/TiRex-2", device=_DEVICE)
+chronos = Chronos2Pipeline.from_pretrained("amazon/chronos-2", device_map=_DEVICE)
 
-# The model's native quantile levels (e.g. 0.1 .. 0.9), read from the model rather
-# than hardcoded so this survives a change in quantile count.
-_Q = [round(float(q), 3) for q in tirex.quantiles.detach().cpu().numpy()]
+# Predictive quantile levels to request from the model. Kept as their own traces
+# (not collapsed to the median) so the ensemble carries the model's own uncertainty.
+_Q = [0.1, 0.5, 0.9]
 
 # Temperature and precipitation are FUTURE-KNOWN covariates: we have both the
-# analysis over the history window and a forecast over the horizon. TiRex-2 wants
-# such covariates as one series spanning context_length + prediction_length.
+# analysis over the history window and a forecast over the horizon, so they go in
+# Chronos-2's `future_df` (which spans the forecast horizon per series).
 _COVS = ["temperature_2m", "precipitation_surface"]
 
 
-def run_tirex2(future_basin):
-    """TiRex-2 traces per ensemble member. Returns DataFrame [time x <member>_q<level>].
+def run_chronos2(future_basin):
+    """Chronos-2 traces per ensemble member. Returns DataFrame [time x <member>_q<level>].
 
-    Builds one TimeseriesType per weather member: a shared target history plus that
-    member's future-known weather covariates (history covariates concatenated with
-    the member's forecast covariates). The forecast ensemble combines BOTH sources
-    of uncertainty — the spread across weather members AND TiRex-2's own predictive
-    quantiles — so we keep every quantile, not just the median. With 51 weather
-    members and 9 quantiles that yields 459 traces, labeled e.g. "12_q0.9".
+    Builds one series per weather member: a shared target history (with that
+    member's history covariates) plus that member's future-known weather covariates.
+    The forecast ensemble combines BOTH sources of uncertainty — the spread across
+    weather members AND Chronos-2's own predictive quantiles — so we keep every
+    quantile, not just the median. With 51 weather members and 3 quantiles that
+    yields 153 traces, labeled e.g. "12_q0.9".
     """
-    hist = history_df.set_index("timestamp")
-    target = hist[VARIABLE].to_numpy(dtype="float32")[None, :]   # (1, context_len), NaNs ok
-    # Forecast in log space when LOG_TARGET is set (see §1). log1p keeps exact zeros
-    # finite and preserves NaNs; we invert with expm1 on the forecast below. Only
-    # the target is transformed — covariates keep their physical units.
-    if LOG_TARGET:
-        target = np.log1p(target)
-    hist_cov = hist[_COVS].to_numpy(dtype="float32").T           # (n_cov, context_len)
     fut = _future_long(future_basin)
+    members = fut["member"].unique()
 
+    # Context: replicate the shared target history once per member, tagged by member
+    # id. Forecast in log space when LOG_TARGET is set (see §1); log1p keeps exact
+    # zeros finite and preserves NaNs, and we invert with expm1 on the forecast
+    # below. Only the target is transformed — covariates keep their physical units.
+    hist = history_df.copy()
+    if LOG_TARGET:
+        hist[VARIABLE] = np.log1p(hist[VARIABLE])
+    context = pd.concat(
+        [hist.assign(member=m) for m in members], ignore_index=True
+    )
+
+    pred = chronos.predict_df(
+        context,
+        future_df=fut,
+        prediction_length=FORECAST_DAYS,
+        quantile_levels=_Q,
+        id_column="member",
+        timestamp_column="timestamp",
+        target=VARIABLE,
+    )
+
+    # predict_df returns one row per (member, timestamp) with a column per quantile
+    # level (named "0.1", "0.5", ...). Reshape to [timestamp x <member>_q<level>].
     out = {}
     valid_time = None
-    for member, g in fut.groupby("member"):
+    for member, g in pred.groupby("member"):
         g = g.sort_values("timestamp")
-        fut_cov = g[_COVS].to_numpy(dtype="float32").T           # (n_cov, horizon)
-        future_covariates = np.concatenate([hist_cov, fut_cov], axis=1)  # context+horizon
-        ts = TimeseriesType(
-            target=torch.from_numpy(target),
-            past_covariates=None,
-            future_covariates=torch.from_numpy(future_covariates),
-        )
-        fc = tirex.forecast(timeseries=[ts], prediction_length=FORECAST_DAYS,
-                            output_type="numpy")[0]
-        # fc shape: (n_targets, n_quantiles, horizon). Emit every quantile as its
-        # own trace so the ensemble carries the model's forecast uncertainty too.
-        fc = np.asarray(fc)[0]                                   # (n_quantiles, horizon)
-        if LOG_TARGET:
-            fc = np.expm1(fc)                                    # back to physical units
-        for qi, q_level in enumerate(_Q):
-            out[f"{member}_q{q_level}"] = fc[qi, :]
+        for q_level in _Q:
+            vals = g[str(q_level)].to_numpy(dtype="float32")
+            if LOG_TARGET:
+                vals = np.expm1(vals)                            # back to physical units
+            out[f"{member}_q{q_level}"] = vals
         valid_time = g["timestamp"].to_numpy()
     return pd.DataFrame(out, index=pd.DatetimeIndex(valid_time, name="timestamp"))
 '''
 )
 
-code(r'''MODELS = {"TiRex-2": run_tirex2}
+code(r'''MODELS = {"Chronos-2": run_chronos2}
 COVARIATE_SOURCES = {"GEFS": gefs_fc_basin, "IFS ENS": ifs_fc_basin}
 
 # predictions[model][covariate_source] -> DataFrame [valid_time x member]
@@ -602,9 +618,9 @@ fig.tight_layout()
 '''
 )
 
-code(r'''# Weather-source comparison: TiRex-2 ensemble mean and 10-90% spread per source.
+code(r'''# Weather-source comparison: Chronos-2 ensemble mean and 10-90% spread per source.
 fig, ax = plt.subplots(figsize=(13, 5))
-by_cov = predictions["TiRex-2"]
+by_cov = predictions["Chronos-2"]
 for cov_name, pred in by_cov.items():
     pred = _with_anchor(pred)
     ax.plot(pred.index, pred.mean(axis=1), color=cov_colors[cov_name],
@@ -612,49 +628,92 @@ for cov_name, pred in by_cov.items():
     ax.fill_between(pred.index, pred.quantile(0.1, axis=1), pred.quantile(0.9, axis=1),
                     color=cov_colors[cov_name], alpha=0.15)
 plot_obs_and_init(ax)
-ax.set_title("TiRex-2 forecast — GEFS vs IFS ENS weather (ensemble mean, 10–90%)")
+ax.set_title("Chronos-2 forecast — GEFS vs IFS ENS weather (ensemble mean, 10–90%)")
 '''
 )
 
 # ---------------------------------------------------------------- submit
 md(r"""## 7. Export & submit your forecast
 
-We write a **standardized forecast file** plus a **metadata sidecar** using values
-already in scope. Then submit both through the workshop Google Form (which also
-handles the optional co-authorship consent).
+We write a **standardized forecast file** in the [Ecological Forecasting Initiative
+(EFI) standard](https://projects.ecoforecast.org/neon4cast-docs/Submission-Instructions.html)
+— the same long format used by the NEON / USGS forecasting challenges — plus a
+**metadata sidecar**, using values already in scope. Then submit both through the
+workshop Google Form (which also handles the optional co-authorship consent).
+
+The EFI columns are `project_id, model_id, datetime, reference_datetime, duration,
+site_id, variable, family, parameter, prediction`. We report `family="ensemble"`:
+each forecast trace is one ensemble member (`parameter` = its integer index), so the
+full weather-member × Chronos-2-quantile spread is preserved without fitting a
+distribution. Each weather source becomes its own `model_id`.
 
 **Submit here:** https://forms.gle/DMqsNGiZtV1wjYP56  ·  details in `docs/submission.md`.""")
 
-code(r'''# Tidy long-format forecast: one row per (model, covariate_source, member, valid_time).
+code(r'''# EFI-standard long format: one row per (model_id, ensemble member, datetime).
+# Each forecast trace (weather_member x chronos2_quantile) is one ensemble member; we
+# renumber the traces of each model_id to a contiguous integer `parameter` index.
+slug = (PRESET if TARGET_MODE == "published" else VARIABLE).replace(" ", "_")
+ref_dt = INIT_TIME.strftime("%Y-%m-%d")
+
+
+def _model_id(model_name, cov_name):
+    """Stable EFI model_id, e.g. 'chronos2_gefs', from a model + weather source."""
+    norm = lambda s: s.lower().replace("-", "").replace(" ", "_")
+    return f"{norm(model_name)}_{norm(cov_name)}"
+
+
 rows = []
 for model_name, by_cov in predictions.items():
     for cov_name, pred in by_cov.items():
-        long = pred.reset_index().melt(
-            id_vars="timestamp", var_name="member", value_name="prediction")
-        long["model"] = model_name
-        long["covariate_source"] = cov_name
-        rows.append(long)
-forecast_long = pd.concat(rows, ignore_index=True).rename(columns={"timestamp": "valid_time"})
+        # Map each trace column to a 1-based ensemble member index for this model_id.
+        member_index = {col: i + 1 for i, col in enumerate(pred.columns)}
+        long = (
+            pred.reset_index()
+            .melt(id_vars="timestamp", var_name="_trace", value_name="prediction")
+        )
+        long["parameter"] = long["_trace"].map(member_index)
+        long["model_id"] = _model_id(model_name, cov_name)
+        long["datetime"] = long["timestamp"].dt.strftime("%Y-%m-%d")
+        rows.append(long.drop(columns=["timestamp", "_trace"]))
 
-slug = (PRESET if TARGET_MODE == "published" else VARIABLE).replace(" ", "-")
+forecast_long = pd.concat(rows, ignore_index=True)
+forecast_long["project_id"] = PROJECT_ID
+forecast_long["reference_datetime"] = ref_dt
+forecast_long["duration"] = DURATION
+forecast_long["site_id"] = slug
+forecast_long["variable"] = VARIABLE
+forecast_long["family"] = "ensemble"
+
+# Order columns to the EFI standard.
+forecast_long = forecast_long[[
+    "project_id", "model_id", "datetime", "reference_datetime", "duration",
+    "site_id", "variable", "family", "parameter", "prediction",
+]]
+
 stem = f"forecast_{slug}_{INIT_TIME.date()}"
 forecast_long.to_csv(f"{stem}.csv", index=False)
 
 metadata = {
     "participant": PARTICIPANT,
+    "standard": "EFI",
+    "project_id": PROJECT_ID,
+    "site_id": slug,
     "variable": VARIABLE,
     "units": UNITS,
+    "duration": DURATION,
+    "family": "ensemble",
     "location": {"lat": TARGET_LAT, "lon": TARGET_LON,
                  "location_mode": cfg.get("location_mode")},
-    "init_time": str(INIT_TIME.date()),
+    "reference_datetime": ref_dt,
     "forecast_days": FORECAST_DAYS,
+    "model_ids": sorted(forecast_long["model_id"].unique().tolist()),
     "models": list(MODELS),
     "covariate_sources": list(COVARIATE_SOURCES),
-    # Each `member` is a "<weather_member>_q<quantile>" trace: the ensemble carries
-    # both weather-member spread and TiRex-2's predictive quantiles.
-    "ensemble_encoding": "weather_member x tirex2_quantile",
+    # Each ensemble member (`parameter`) is a "<weather_member>_q<quantile>" trace:
+    # the ensemble carries both weather-member spread and Chronos-2's predictive quantiles.
+    "ensemble_encoding": "weather_member x chronos2_quantile",
     "quantiles": _Q,
-    "n_traces": int(forecast_long["member"].nunique()),
+    "n_members_per_model": int(forecast_long.groupby("model_id")["parameter"].nunique().max()),
     # Predictions in the CSV are already in physical units; this records whether the
     # model forecast in log1p space internally (predictions inverted with expm1).
     "log_target": bool(LOG_TARGET),
@@ -684,7 +743,7 @@ else:
 
 md(r"""## Where to go next
 - `appendix_zonal_stats.ipynb` — area-weighted covariate extraction with `xvec`.
-- `appendix_model_deep_dive.ipynb` — how TiRex-2 behaves with gaps in the target
+- `appendix_model_deep_dive.ipynb` — how Chronos-2 behaves with gaps in the target
   history, and how covariates change the forecast.
 - Swap the fetcher / gauge in Section 1 to forecast a different river; see
   `docs/data_sources.md` for options.""")

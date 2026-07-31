@@ -12,7 +12,7 @@ A CSV with at least two columns:
 | a date/time column | first column; anything `pandas.to_datetime` can parse |
 | a numeric value column | first numeric column after the time column |
 
-The notebook resamples to **daily** and keeps gaps as `NaN` — TiRex-2 forecasts
+The notebook resamples to **daily** and keeps gaps as `NaN` — Chronos-2 forecasts
 from an incomplete history. Also set `UPLOAD_META` (site lat/lon and
 `location_mode`) so the weather covariates are drawn from the right place.
 
@@ -22,8 +22,8 @@ interface to national streamflow archives. Swap the fetcher in the preset:
 
 | Fetcher | Region | Notes |
 |---|---|---|
-| `UKEAFetcher` | UK (Environment Agency) | **default preset** (Thames/Kingston) |
-| `USAFetcher` | USA (USGS NWIS) | `gauge_id` = USGS site number |
+| `USAFetcher` | USA (USGS NWIS) | **default preset** (Delaware/Montague, `01438500`); `gauge_id` = USGS site number |
+| `UKEAFetcher` | UK (Environment Agency) | Thames/Kingston (commented backup preset) |
 | `SloveniaFetcher`, `CzechFetcher`, ... | various | see RivRetrieve docs |
 
 Set `source: "rivretrieve:<Fetcher>"`, the `gauge_id`, and `rr_variable`

@@ -6,13 +6,14 @@ laptop* — Jake Zwart (USGS) & Alden Keefe Sampson (Dynamical).
 
 You generate a short-range forecast of a **water variable** — streamflow, stream
 temperature, lake temperature, or **your own uploaded timeseries** — using
-[TiRex-2](https://github.com/NX-AI/tirex-2), a zero-shot time-series foundation
+[Chronos-2](https://huggingface.co/amazon/chronos-2), a zero-shot time-series foundation
 model, driven by open ensemble weather forecasts from
 [dynamical.org](https://dynamical.org). Then you **submit** your forecast for an
 eventual global evaluation.
 
-> Run it once with no edits and it reproduces a working forecast for the River
-> Thames at Kingston. Then edit a single config block to forecast *your* site.
+> Run it once with no edits and it reproduces a working forecast for the Delaware
+> River at Montague, NJ (USGS-01438500). Then edit a single config block to
+> forecast *your* site.
 
 ## Notebooks
 
@@ -40,7 +41,7 @@ uv run --with jupyter jupyter lab
 
 ## Choosing your target
 - **Published data** — pick a preset in Section 1 (RivRetrieve for global
-  streamflow; USGS NWIS, etc.). Default is Thames streamflow.
+  streamflow; USGS NWIS, etc.). Default is Delaware River at Montague streamflow.
 - **Upload your own** — a CSV with a time column and a value column; gaps are
   fine. Works for lake temperature and any other water variable.
 
