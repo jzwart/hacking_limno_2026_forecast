@@ -78,7 +78,7 @@ import platform
 # changes: Colab's "Restart runtime" keeps the VM disk (and this /tmp file), so
 # without a bump an old, broken install would keep being skipped. Bump it whenever
 # the install steps change.
-_SENTINEL = "/tmp/.forecast_workshop_installed_v2"
+_SENTINEL = "/tmp/.forecast_workshop_installed_v3"
 
 # When launched via `uv run --with jupyter jupyter lab`, the kernel runs in an
 # ephemeral uv environment that has NO pip — `python -m pip install` fails with
@@ -131,18 +131,22 @@ if not os.path.exists(_SENTINEL):
          "chronos-forecasting[extras]>=2.2",
          "git+https://github.com/kratzert/RivRetrieve-Python.git")
 
-    # 4) Remove torchvision. Colab preinstalls a CUDA torchvision, and pip may leave
-    #    it (or reinstall a mismatched build via chronos-forecasting[extras]) beside
-    #    our CPU torch. That ABI mismatch makes torchvision::nms fail to register
-    #    ("operator torchvision::nms does not exist"), which cascades into transformers'
-    #    lazy import ("Could not import module 'PreTrainedModel'"). Chronos-2 CPU
-    #    inference never uses torchvision, so uninstalling it makes transformers skip
-    #    the vision path entirely — far more robust than trying to keep the two ABI-
-    #    matched. Ignore the exit code if it's already gone.
+    # 4) Remove torchvision AND torchaudio. Colab preinstalls CUDA builds of both,
+    #    and pip may leave them (or reinstall mismatched builds via chronos extras)
+    #    beside our CPU torch. That ABI mismatch breaks their C++ ops against CPU torch
+    #    — torchvision fails to register torchvision::nms ("operator torchvision::nms
+    #    does not exist") and torchaudio fails to load its .so ("undefined symbol:
+    #    torch_library_impl") — either of which cascades into transformers' lazy import
+    #    ("Could not import module 'PreTrainedModel'"). Chronos-2 CPU inference uses
+    #    neither, so uninstalling them makes transformers skip those paths entirely —
+    #    far more robust than trying to keep the ABIs matched. Ignore the exit code if
+    #    a package is already gone.
     if _USE_UV:
-        subprocess.run([_UV, "pip", "uninstall", "--python", sys.executable, "torchvision"])
+        subprocess.run([_UV, "pip", "uninstall", "--python", sys.executable,
+                        "torchvision", "torchaudio"])
     else:
-        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "torchvision"])
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y",
+                        "torchvision", "torchaudio"])
 
     open(_SENTINEL, "w").close()
 
