@@ -105,15 +105,21 @@ def _pip(*pkgs, extra_args=()):
 
 if not os.path.exists(_SENTINEL):
     # 1) CPU PyTorch first, so the heavier installs below don't pull the large CUDA
-    #    build (a single-site forecast runs fine on CPU). The CPU wheel index only
-    #    serves Linux/Windows wheels, and is only *needed* on Linux (where plain
-    #    PyPI torch would pull the CUDA build). On macOS/Windows PyPI's torch is
+    #    build (a single-site forecast runs fine on CPU). Install torchvision from the
+    #    same CPU index in the SAME command: Colab preinstalls a CUDA torchvision, and
+    #    a CPU torch + CUDA torchvision is an ABI mismatch that makes torchvision::nms
+    #    fail to register ("operator torchvision::nms does not exist"), which cascades
+    #    into transformers' lazy import ("Could not import module 'PreTrainedModel'").
+    #    Overwriting torchvision with the matching CPU build avoids that. The CPU wheel
+    #    index only serves Linux/Windows wheels, and is only *needed* on Linux (where
+    #    plain PyPI torch would pull the CUDA build). On macOS/Windows PyPI's torch is
     #    already CPU-only, so install from PyPI there — the CPU index has no macOS
     #    wheels and is prone to timeouts.
     if platform.system() == "Linux":
-        _pip("torch<2.10", extra_args=("--index-url", "https://download.pytorch.org/whl/cpu"))
+        _pip("torch<2.10", "torchvision",
+             extra_args=("--index-url", "https://download.pytorch.org/whl/cpu"))
     else:
-        _pip("torch<2.10")
+        _pip("torch<2.10", "torchvision")
     # 2) numpy pinned so the heavier installs below don't half-upgrade it (the
     #    classic "cannot import name '_center' from numpy._core.umath" crash).
     _pip("numpy>=1.26,<2.1")
