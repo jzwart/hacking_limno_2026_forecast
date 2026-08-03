@@ -91,7 +91,11 @@ def _pip(*pkgs, extra_args=()):
         cmd = [_UV, "pip", "install", "--python", sys.executable, *extra_args, *pkgs]
     else:
         cmd = [sys.executable, "-m", "pip", "install", *extra_args, *pkgs]
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=subprocess.STDOUT)
+    # Capture output through a pipe and print it, rather than passing sys.stdout
+    # directly: in Colab/Jupyter sys.stdout is a fake stream with no real file
+    # descriptor, so subprocess's fileno() call raises "UnsupportedOperation: fileno".
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    print(result.stdout, end="")
     if result.returncode != 0:
         raise RuntimeError(
             "Dependency install failed (see output above). Nothing was cached, so "
