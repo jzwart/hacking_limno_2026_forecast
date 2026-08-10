@@ -43,7 +43,7 @@ This appendix is optional and standalone; it reuses the same data sources as the
 core notebook.
 """))
 zonal.append(("code", r"""# numpy pinned first so later installs don't leave a half-upgraded numpy.
-!pip install -q "numpy>=1.26,<2.1" truststore dynamical-catalog rioxarray xvec exactextract geopandas requests"""))
+!pip install -q "numpy>=1.26,<2.1" truststore icechunk pystac rioxarray xvec exactextract geopandas requests"""))
 zonal.append(("code", r'''# Route TLS through the OS trust store so https works behind TLS-inspecting
 # proxies (e.g. USGS) that inject a self-signed root CA. No-op if not installed.
 try:
@@ -52,13 +52,23 @@ try:
 except ImportError:
     pass
 
-import dynamical_catalog
+import icechunk
 import geopandas as gpd
 import pandas as pd
+import pystac
 import requests
 import rioxarray  # noqa: F401
+import xarray as xr
 import xvec  # noqa: F401  registers the .xvec accessor
 from shapely.geometry import shape
+
+
+def open_dynamical(dataset_id):
+    """Open a dynamical.org dataset via its STAC `icechunk-https` asset."""
+    catalog = pystac.Catalog.from_file("https://stac.dynamical.org/catalog.json")
+    asset = catalog.get_child(dataset_id).assets["icechunk-https"]
+    repo = icechunk.Repository.open(icechunk.http_storage(asset.href))
+    return xr.open_zarr(repo.readonly_session("main").store, chunks=None)
 
 # Same reference basin as the core notebook (Delaware River at Montague, NJ).
 LAT, LON = 41.3123, -74.7960
@@ -72,7 +82,7 @@ minx, miny, maxx, maxy = basin.bounds
 '''))
 zonal.append(("code", r'''# A recent slice of GEFS-analysis temperature & precipitation over the basin box.
 ds = (
-    dynamical_catalog.open("noaa-gefs-analysis")
+    open_dynamical("noaa-gefs-analysis")
     .sel(time=slice("2025-12-01", "2026-01-08"))
     [["temperature_2m", "precipitation_surface"]]
     .sel(latitude=slice(maxy + 0.5, miny - 0.5), longitude=slice(minx - 0.5, maxx + 0.5))

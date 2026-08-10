@@ -46,7 +46,7 @@ The notebooks run in Colab / Jupyter, not as a package. The install cell order i
    a mismatched CUDA torch that triggers `torchvision::nms does not exist`).
 2. **numpy pinned** (`>=1.26,<2.1`) so later installs don't leave a half-upgraded
    numpy (`cannot import name '_center' from numpy._core.umath`).
-3. **The rest of the stack** (dynamical-catalog, rioxarray, cartopy, geopandas,
+3. **The rest of the stack** (icechunk, pystac, rioxarray, cartopy, geopandas,
    chronos-forecasting[extras], RivRetrieve).
 
 On Colab the install cell restarts the runtime **once** (guarded by a `/tmp`

@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Zero-shot water forecasting with open weather data — AEMON-J/DSOS 2026 workshop"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "dynamical-catalog",
+    "icechunk",
+    "pystac",
+    "xarray",
     "rioxarray",
     "cartopy",
     "geopandas",

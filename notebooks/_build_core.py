@@ -91,7 +91,7 @@ import platform
 # changes: Colab's "Restart runtime" keeps the VM disk (and this /tmp file), so
 # without a bump an old, broken install would keep being skipped. Bump it whenever
 # the install steps change.
-_SENTINEL = "/tmp/.forecast_workshop_installed_v3"
+_SENTINEL = "/tmp/.forecast_workshop_installed_v4"
 
 # When launched via `uv run --with jupyter jupyter lab`, the kernel runs in an
 # ephemeral uv environment that has NO pip — `python -m pip install` fails with
@@ -140,7 +140,7 @@ if not os.path.exists(_SENTINEL):
     #    https call fails with CERTIFICATE_VERIFY_FAILED. Harmless elsewhere.
     #    chronos-forecasting[extras] pulls transformers; installing CPU torch first
     #    (above) keeps it from dragging in a CUDA torch build.
-    _pip("truststore", "dynamical-catalog", "rioxarray", "cartopy", "geopandas",
+    _pip("truststore", "icechunk", "pystac", "rioxarray", "cartopy", "geopandas",
          "chronos-forecasting[extras]>=2.2",
          "git+https://github.com/kratzert/RivRetrieve-Python.git")
 
@@ -191,12 +191,14 @@ except ImportError:
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-import dynamical_catalog
+import icechunk
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pystac
 import requests
 import rioxarray  # noqa: F401  registers the .rio accessor
+import xarray as xr
 from shapely.geometry import shape
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -234,6 +236,19 @@ PRESET = "delaware_streamflow"     # used only when TARGET_MODE == "published"
 # past run, e.g. INIT_TIME = pd.Timestamp("2026-01-08").
 INIT_TIME = pd.Timestamp.today().normalize()
 FORECAST_DAYS = 10                       # horizon
+
+# --- weather covariates fed to Chronos-2 (add / remove freely) ---
+# Each key is a dynamical.org variable name; the model conditions the forecast on
+# these as future-known inputs (past analysis + ensemble forecast). Comment a line
+# out to drop that covariate, or add one to condition on more weather. `scale`
+# converts the dataset's native units (precip is a surface flux -> mm/day); `label`
+# is only used for axis titles. Whatever you list here must exist in BOTH the GEFS
+# and IFS ENS datasets (see the STAC catalog note in §4). Forecasting with an empty
+# {} is allowed — Chronos-2 then runs on the target history alone.
+COVARIATES = {
+    "temperature_2m":        {"scale": 1.0,      "label": "air temperature [K]"},
+    "precipitation_surface": {"scale": 86_400.0, "label": "precipitation [mm/day]"},
+}
 
 # --- your details, baked into the submission file (see Section 7) ---
 PARTICIPANT = {
@@ -428,14 +443,17 @@ ax.set_title(f"Observed {VARIABLE}")
 # ---------------------------------------------------------------- covariates
 md(r"""## 4. Weather covariates from dynamical.org
 
-We average temperature and precipitation over the contributing area:
+We average the covariates you chose in §1 (`COVARIATES`; by default air temperature
+and precipitation) over the contributing area:
 past values from the **NOAA GEFS analysis** (the history the model sees) and
 **10-day ensemble forecasts** from both **NOAA GEFS** (31 members) and
 **ECMWF IFS ENS** (51 members). Each ensemble member becomes one plausible future.
 
-> 💡 The dynamical.org STAC catalog at
-> `https://stac.dynamical.org/catalog.json` is designed to be AI-friendly — point
-> an LLM at it to discover datasets.""")
+> 💡 We open each dataset straight from the dynamical.org **STAC catalog** at
+> `https://stac.dynamical.org/catalog.json`: read the collection's `icechunk-https`
+> asset, open its [Icechunk](https://icechunk.io) repo, and hand the store to
+> `xarray.open_zarr`. The catalog is designed to be AI-friendly — point an LLM at it
+> to discover more datasets.""")
 
 code(r'''# How much past history to feed the model. ~6 years of daily values is plenty of
 # seasonal context for Chronos-2 while keeping the dynamical.org pull modest; lower
@@ -448,25 +466,45 @@ print(f"History window: {history_window.start.date()} -> {history_window.stop.da
 '''
 )
 
-code(r'''def basin_daily(ds, time_dim):
+code(r'''# The covariate variable names + unit scaling come straight from the COVARIATES
+# config in §1, so adding/removing a covariate there flows through everything below.
+COV_NAMES = list(COVARIATES)
+
+
+def basin_daily(ds, time_dim):
     """Clip to the contributing area, average over space, resample to daily.
 
-    Precipitation is converted from a surface flux to mm/day.
+    Each covariate is rescaled to physical units per its COVARIATES `scale`
+    (e.g. precipitation surface-flux -> mm/day).
     """
     out = (
-        ds[["temperature_2m", "precipitation_surface"]]
+        ds[COV_NAMES]
         .sel(latitude=slice(maxy + 0.5, miny - 0.5), longitude=slice(minx - 0.5, maxx + 0.5))
         .rio.clip([area], crs="EPSG:4326")
         .mean(dim=("latitude", "longitude"))
         .resample({time_dim: "1D"}).mean()
     )
-    out["precipitation_surface"] *= 86_400
+    for name, spec in COVARIATES.items():
+        out[name] *= spec["scale"]
     return out.load()
+
+
+# Open a dynamical.org dataset via its STAC entry: read the collection's
+# `icechunk-https` asset, open the Icechunk repo read-only, and hand the store to
+# xarray. Cached so each dataset's catalog + repo handshake happens only once.
+_STAC = pystac.Catalog.from_file("https://stac.dynamical.org/catalog.json")
+
+
+def open_dynamical(dataset_id):
+    asset = _STAC.get_child(dataset_id).assets["icechunk-https"]
+    repo = icechunk.Repository.open(icechunk.http_storage(asset.href))
+    session = repo.readonly_session("main")
+    return xr.open_zarr(session.store, chunks=None)
 
 
 def forecast_meteo(dataset_id):
     return basin_daily(
-        dynamical_catalog.open(dataset_id)
+        open_dynamical(dataset_id)
         .sel(init_time=INIT_TIME, lead_time=slice("0h", f"{FORECAST_DAYS}d"))
         .swap_dims({"lead_time": "valid_time"}),
         "valid_time",
@@ -474,7 +512,7 @@ def forecast_meteo(dataset_id):
 
 
 analysis_meteo = basin_daily(
-    dynamical_catalog.open("noaa-gefs-analysis").sel(time=slice(history_window.start, None)),
+    open_dynamical("noaa-gefs-analysis").sel(time=slice(history_window.start, None)),
     "time",
 )
 gefs_fc_basin = forecast_meteo("noaa-gefs-forecast-35-day")
@@ -482,20 +520,17 @@ ifs_fc_basin = forecast_meteo("ecmwf-ifs-ens-forecast-15-day-0-25-degree")
 
 history_df = (
     pd.concat(
-        {
-            VARIABLE: obs,
-            "temperature_2m": analysis_meteo["temperature_2m"].to_pandas(),
-            "precipitation_surface": analysis_meteo["precipitation_surface"].to_pandas(),
-        },
+        {VARIABLE: obs,
+         **{name: analysis_meteo[name].to_pandas() for name in COV_NAMES}},
         axis=1,
     )
     .loc[history_window]
     .reset_index()
     .rename(columns={"time": "timestamp"})
 )
-# Keep target gaps (NaN) — the foundation models handle them — but require
-# covariates to be present.
-history_df = history_df.dropna(subset=["temperature_2m", "precipitation_surface"])
+# Keep target gaps (NaN) — the foundation models handle them — but require every
+# covariate to be present (no-op if COVARIATES is empty).
+history_df = history_df.dropna(subset=COV_NAMES)
 print(f"History rows: {len(history_df)}, target gaps: {history_df[VARIABLE].isna().sum()}")
 '''
 )
@@ -527,11 +562,11 @@ rising limb of an event better while keeping predictions non-negative.
 > This runs on CPU by default (no GPU needed); `device` is auto-selected below.""")
 
 code(r'''def _future_long(future_basin):
-    """dynamical forecast DataArray -> long DataFrame [member,timestamp,temp,precip]."""
+    """dynamical forecast DataArray -> long DataFrame [member, timestamp, *covariates]."""
     return (
         future_basin.to_dataframe().reset_index()
         .rename(columns={"valid_time": "timestamp", "ensemble_member": "member"})
-        [["member", "timestamp", "temperature_2m", "precipitation_surface"]]
+        [["member", "timestamp", *COV_NAMES]]
         .astype({"member": str})
     )
 '''
@@ -547,10 +582,9 @@ chronos = Chronos2Pipeline.from_pretrained("amazon/chronos-2", device_map=_DEVIC
 # (not collapsed to the median) so the ensemble carries the model's own uncertainty.
 _Q = [0.1, 0.5, 0.9]
 
-# Temperature and precipitation are FUTURE-KNOWN covariates: we have both the
-# analysis over the history window and a forecast over the horizon, so they go in
-# Chronos-2's `future_df` (which spans the forecast horizon per series).
-_COVS = ["temperature_2m", "precipitation_surface"]
+# The covariates chosen in §1 (COV_NAMES) are FUTURE-KNOWN: we have both the analysis
+# over the history window and a forecast over the horizon, so they ride along in
+# `future_df` (which spans the forecast horizon per series) via _future_long.
 
 
 def run_chronos2(future_basin):
@@ -756,6 +790,7 @@ metadata = {
     "model_ids": sorted(forecast_long["model_id"].unique().tolist()),
     "models": list(MODELS),
     "covariate_sources": list(COVARIATE_SOURCES),
+    "covariates": list(COVARIATES),
     # Each ensemble member (`parameter`) is a "<weather_member>_q<quantile>" trace:
     # the ensemble carries both weather-member spread and Chronos-2's predictive quantiles.
     "ensemble_encoding": "weather_member x chronos2_quantile",
