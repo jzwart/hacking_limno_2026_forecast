@@ -23,7 +23,7 @@ md(r"""# Zero-shot water forecasting with open weather data
 
 **AEMON-J / DSOS "Hacking Limnology" 2026 — Day 2: Climate Data**
 Workshop: *How to access petabytes of weather forecasts from your laptop*
-(Jake Zwart, USGS · Alden Keefe Sampson, Dynamical)
+(Jake Zwart, USGS · Thiago Nascimento, EAWAG · Alden Keefe Sampson, Dynamical)
 
 You will generate a short-range forecast of a **water variable** — streamflow,
 stream temperature, lake temperature, or **your own uploaded timeseries** — using
@@ -41,7 +41,9 @@ for an eventual global evaluation.
   file via `colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/forecast_workshop.ipynb`.
   No install needed beyond the first cell. A Google account helps for submission
   but is not required to run.
-- **Locally with `uv`** (no Google account, better for slow connections): see
+- **Locally with `uv`** (no Google account; best for *unstable* connections or
+  repeated runs — you download the stack and model weights once and cache them,
+  instead of re-fetching whenever a Colab session recycles): see
   `docs/local_setup.md`.
 """)
 
@@ -226,7 +228,7 @@ PARTICIPANT = {
     "affiliation": "",
     "email": "",
     "orcid": "",           # optional
-    "coauthor_optin": False,  # True = consent to co-authorship on a global-eval output
+    "coauthor_optin": False,  # True = consent to co-authorship on a global-eval output for Hacking Limnology 
 }
 # ==================================================================
 

@@ -1,19 +1,18 @@
 # Zero-shot water forecasting with open weather data
 
-Workshop materials for **AEMON-J / DSOS "Hacking Limnology" 2026 — Day 2: Climate Data**
+Workshop materials for [**AEMON-J / DSOS "Hacking Limnology" 2026 — Day 2: Climate Data**](https://aquaticdatasciopensci.github.io/day2-climate-data/)
 (Tue 11 Aug 2026). Workshop: *How to access petabytes of weather forecasts from your
-laptop* — Jake Zwart (USGS) & Alden Keefe Sampson (Dynamical).
+laptop* — Jake Zwart (USGS), Thiago Nascimento (EAWAG), & Alden Keefe Sampson (Dynamical).
 
-You generate a short-range forecast of a **water variable** — streamflow, stream
-temperature, lake temperature, or **your own uploaded timeseries** — using
+You generate a short-range forecast of a water variable, e.g., publicly available streamflow, (or your own uploaded timeseries), using
 [Chronos-2](https://huggingface.co/amazon/chronos-2), a zero-shot time-series foundation
 model, driven by open ensemble weather forecasts from
-[dynamical.org](https://dynamical.org). Then you **submit** your forecast for an
+[dynamical.org](https://dynamical.org). Then you submit your forecast for an
 eventual global evaluation.
 
 > Run it once with no edits and it reproduces a working forecast for the Delaware
 > River at Montague, NJ (USGS-01438500). Then edit a single config block to
-> forecast *your* site.
+> forecast your site.
 
 ## Notebooks
 
@@ -30,7 +29,7 @@ Click a badge above. The first cell installs everything (~1–2 min). A Google
 account is helpful for submitting via the form but is **not required to run** the
 notebook — you can run it and download the output files without one.
 
-### Locally with `uv` (no Google account; better on slow connections)
+### Locally with `uv` (no Google account; best for unstable connections or repeated runs)
 See [`docs/local_setup.md`](docs/local_setup.md). Short version:
 
 ```bash
