@@ -234,45 +234,149 @@ build(zonal, "appendix_zonal_stats.ipynb", "zonal stats")
 
 # ============================================================ model deep dive
 dive = []
-dive.append(("markdown", r"""# Appendix: Chronos-2 — data gaps & the effect of covariates
+dive.append(("markdown", r"""# Appendix: Chronos-2 — do covariates help, and what about data gaps?
 
-Two questions the core notebook glosses over:
+This appendix runs on the **same real data as the core notebook** — observed
+streamflow for the Delaware River at Montague, NJ (USGS-01438500) and basin-averaged
+weather from dynamical.org — and asks two questions the core notebook only asserts:
 
-1. **What happens when the target history has gaps?** Real observation records
-   have missing days. Chronos-2 is trained to forecast from incomplete context and
-   ingests NaNs directly, but the effect on skill is worth seeing. We take a
-   clean series, punch synthetic gaps into it, and re-forecast.
-2. **How much do covariates change the forecast?** We compare a target-only
-   forecast against one conditioned on a future-known covariate.
+1. **Do the weather covariates actually improve the forecast?** We hold out the last
+   two weeks of the observed record as "truth", then forecast that window twice: once
+   from the streamflow history **alone**, and once **conditioned on air temperature
+   and precipitation** over the forecast window. Comparing both to the held-out truth
+   shows what the covariates buy you.
+2. **What happens when the target history has gaps?** Real gauge records have missing
+   days. Chronos-2 ingests NaNs directly rather than failing — we punch increasing
+   gaps into the *real* Montague history and watch skill degrade gracefully.
 
-This is a diagnostic notebook — it deliberately runs on synthetic data so it
-stays fast in a live session and needs no downloads beyond the model.
+> **Backtest, not a live forecast.** Because the forecast window is in the past, we
+> can use the dynamical.org **analysis** (observed weather) as the future-known
+> covariate. That is an *idealized* upper bound on covariate value — a real forecast
+> uses an imperfect weather *forecast* (§4–5 of the core notebook), so expect the
+> live benefit to be smaller than what you see here.
 """))
 dive.append(("code", r"""# CPU torch first so the chronos install doesn't pull the large CUDA torch build;
 # then numpy pinned so later installs don't leave a half-upgraded numpy. If a numpy
-# ImportError appears on Colab, restart & re-run.
+# ImportError appears on Colab, restart & re-run. (Same stack as the core notebook,
+# plus RivRetrieve for the observed streamflow.)
 !pip install -q "torch<2.10" --index-url https://download.pytorch.org/whl/cpu
-!pip install -q "numpy>=1.26,<2.1" "chronos-forecasting[extras]>=2.2" pandas matplotlib"""))
-dive.append(("code", r'''import numpy as np
+!pip install -q "numpy>=1.26,<2.1" "chronos-forecasting[extras]>=2.2" truststore \
+    icechunk pystac rioxarray geopandas requests pandas matplotlib \
+    "git+https://github.com/kratzert/RivRetrieve-Python.git"
+# Colab preinstalls CUDA torchvision/torchaudio; drop them so their C++ ops don't
+# clash with our CPU torch and break transformers' lazy import. Chronos-2 CPU
+# inference needs neither. (Harmless if they aren't installed.)
+!pip uninstall -q -y torchvision torchaudio"""))
+dive.append(("code", r'''# Route TLS through the OS trust store so https works behind TLS-inspecting proxies
+# (e.g. USGS) that inject a self-signed root CA. No-op if truststore isn't installed.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 
-# A synthetic but realistic daily series: seasonal cycle + AR(1) noise.
-n = 365 * 4
-rng = np.random.default_rng(0)
-t = np.arange(n)
-seasonal = 20 + 15 * np.sin(2 * np.pi * t / 365)
-noise = np.zeros(n)
-for i in range(1, n):
-    noise[i] = 0.8 * noise[i - 1] + rng.normal(0, 3)
-series = np.clip(seasonal + noise, 1, None)
-idx = pd.date_range("2022-01-01", periods=n, freq="D")
-clean = pd.Series(series, index=idx, name="value")
+# Same reference site as the core notebook: Delaware River at Montague, NJ.
+LAT, LON = 41.3123, -74.7960
+GAUGE_ID = "01438500"           # USGS site number
+HORIZON = 14                    # forecast/backtest window (days)
+HISTORY_DAYS = 365 * 6          # context window fed to the model
+COVS = ["temperature_2m", "precipitation_surface"]  # future-known covariates
 
-HORIZON = 15
-train = clean.iloc[:-HORIZON]
-truth = clean.iloc[-HORIZON:]
+# Backtest issue date (t0): forecast the HORIZON days AFTER this. It must be far
+# enough in the past that both the streamflow record and the GEFS analysis cover the
+# forecast window. Change it to test a different event.
+INIT = pd.Timestamp("2025-06-01")
+'''))
+dive.append(("markdown", r"""## Load the real data (streamflow + basin weather)
+
+Exactly the sources the core notebook uses: observed discharge via
+[RivRetrieve](https://github.com/kratzert/RivRetrieve-Python), the upstream basin
+polygon from the [Global Watersheds API](https://mghydro.com/watersheds/), and
+basin-averaged temperature & precipitation from the dynamical.org **GEFS analysis**.
+"""))
+dive.append(("code", r'''import icechunk
+import geopandas as gpd  # noqa: F401  (ensures the geospatial stack is importable)
+import pystac
+import requests
+import rioxarray  # noqa: F401  registers the .rio accessor
+import xarray as xr
+from shapely.geometry import shape
+
+# --- observed streamflow (m3/s) ---
+import rivretrieve
+obs = rivretrieve.USAFetcher().get_data(
+    gauge_id=GAUGE_ID,
+    variable="discharge_daily_mean",
+    start_date="2015-01-01",
+    end_date=str((INIT + pd.Timedelta(days=HORIZON)).date()),
+)["discharge_daily_mean"]
+obs.index = pd.to_datetime(obs.index)
+obs.name = "streamflow"
+
+# --- upstream basin polygon (for clipping the weather grid) ---
+geo = requests.get(
+    "https://mghydro.com/app/watershed_api",
+    params={"lat": LAT, "lng": LON, "precision": "low"},
+).json()["features"][0]["geometry"]
+area = shape(geo).simplify(0.01)
+minx, miny, maxx, maxy = area.bounds
+
+
+def open_dynamical(dataset_id):
+    """Open a dynamical.org dataset via its STAC `icechunk-https` asset."""
+    catalog = pystac.Catalog.from_file("https://stac.dynamical.org/catalog.json")
+    asset = catalog.get_child(dataset_id).assets["icechunk-https"]
+    repo = icechunk.Repository.open(icechunk.http_storage(asset.href))
+    return xr.open_zarr(repo.readonly_session("main").store, chunks=None)
+
+
+# --- basin-averaged weather over [history .. end of forecast window] ---
+hist_start = INIT - pd.Timedelta(days=HISTORY_DAYS)
+meteo = (
+    open_dynamical("noaa-gefs-analysis")
+    .sel(time=slice(hist_start, INIT + pd.Timedelta(days=HORIZON)))
+    [COVS]
+    .sel(latitude=slice(maxy + 0.5, miny - 0.5), longitude=slice(minx - 0.5, maxx + 0.5))
+    .rio.clip([area], crs="EPSG:4326")
+    .mean(dim=("latitude", "longitude"))
+    .resample(time="1D").mean()
+    .load()
+)
+meteo["precipitation_surface"] *= 86_400  # surface flux -> mm/day
+print("Loaded", int(obs.notna().sum()), "streamflow days and",
+      meteo.sizes["time"], "days of basin weather.")
+'''))
+dive.append(("markdown", r"""## Assemble the backtest: history, held-out truth, future covariates
+
+We forecast in **log space** (streamflow is strictly positive and right-skewed, like
+the core notebook), and split the record at `INIT`: everything before is context,
+the `HORIZON` days from `INIT` on are the held-out truth.
+"""))
+dive.append(("code", r'''# One daily frame: target + covariates, aligned on the calendar.
+df = pd.DataFrame({
+    "streamflow": obs,
+    "temperature_2m": meteo["temperature_2m"].to_pandas(),
+    "precipitation_surface": meteo["precipitation_surface"].to_pandas(),
+})
+df.index.name = "timestamp"
+
+# History (context) and the future window we will forecast.
+hist = df.loc[hist_start:INIT - pd.Timedelta(days=1)].reset_index()
+hist = hist.dropna(subset=COVS)          # covariates must be present; target gaps OK
+future_index = pd.date_range(INIT, periods=HORIZON, freq="D")
+future = df.reindex(future_index).rename_axis("timestamp").reset_index()
+truth = future.set_index("timestamp")["streamflow"]
+
+assert future[COVS].notna().all().all(), "Missing covariate in the forecast window."
+print(f"Context: {len(hist)} days ({hist['timestamp'].min().date()} -> "
+      f"{hist['timestamp'].max().date()}), target gaps: {hist['streamflow'].isna().sum()}")
+print(f"Forecasting {HORIZON} days from {INIT.date()}; "
+      f"truth has {truth.notna().sum()}/{HORIZON} observed days.")
 '''))
 dive.append(("markdown", r"""## Load Chronos-2"""))
 dive.append(("code", r'''from chronos import Chronos2Pipeline
@@ -281,59 +385,125 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 chronos = Chronos2Pipeline.from_pretrained("amazon/chronos-2", device_map=device)
 print("Chronos-2 loaded on", device)
 '''))
-dive.append(("markdown", r"""## Forecast helper (target-only)
+dive.append(("markdown", r"""## Forecast helper (covariates optional)
 
-To isolate the gap effect we forecast the univariate target with no covariates.
-Chronos-2 accepts a bare context series with NaNs.
+One helper drives both experiments. Pass `future_df` (temperature + precipitation
+over the horizon) to condition on the weather; omit it for a target-only forecast.
+Streamflow is transformed with `log1p` on the way in and `expm1` on the way out, so
+the returned quantiles are in physical units (m³/s).
 """))
-dive.append(("code", r'''def chronos_forecast(context_series):
-    # predict_df wants a long frame with an id, a timestamp, and the target column.
-    context = (context_series.rename("value").rename_axis("timestamp")
-               .reset_index().assign(item="series"))
-    pred = chronos.predict_df(
-        context, prediction_length=HORIZON, quantile_levels=[0.5],
-        id_column="item", timestamp_column="timestamp", target="value",
+dive.append(("code", r'''_Q = [0.1, 0.5, 0.9]
+
+
+def chronos_forecast(context_hist, future_df=None):
+    """Forecast HORIZON days of streamflow. With future_df -> covariate-conditioned.
+
+    context_hist: history frame with columns [timestamp, streamflow, *COVS].
+    future_df:    None (target-only) or frame [timestamp, *COVS] over the horizon.
+    Returns a DataFrame indexed by date with columns q0.1 / q0.5 / q0.9 (m3/s).
+    """
+    ctx = context_hist.copy()
+    ctx["streamflow"] = np.log1p(ctx["streamflow"])   # forecast in log space
+    ctx["item"] = "series"
+    cols = ["item", "timestamp", "streamflow"] + (COVS if future_df is not None else [])
+    kwargs = dict(
+        prediction_length=HORIZON, quantile_levels=_Q,
+        id_column="item", timestamp_column="timestamp", target="streamflow",
     )
-    return pred.sort_values("timestamp")["0.5"].to_numpy()  # median quantile
+    if future_df is not None:
+        kwargs["future_df"] = future_df.assign(item="series")[["item", "timestamp", *COVS]]
+    pred = chronos.predict_df(ctx[cols], **kwargs).sort_values("timestamp")
+    out = {f"q{q}": np.expm1(pred[str(q)].to_numpy()) for q in _Q}  # back to m3/s
+    return pd.DataFrame(out, index=pd.DatetimeIndex(pred["timestamp"], name="timestamp"))
 '''))
-dive.append(("markdown", r"""## Punch synthetic gaps
+dive.append(("markdown", r"""## Experiment 1 — with vs. without covariates
 
-We drop random days from the *recent* history (last year) at increasing rates and
-re-forecast. Chronos-2 accepts the NaNs directly — no imputation needed.
+Same history, same held-out truth; the only difference is whether Chronos-2 sees the
+future weather. We score the median forecast with RMSE and MAE against the observed
+truth.
 """))
-dive.append(("code", r'''def with_gaps(series, frac, seed):
+dive.append(("code", r'''fc_bare = chronos_forecast(hist)                       # target history only
+fc_cov = chronos_forecast(hist, future_df=future)      # + temperature & precip
+
+def _score(fc):
+    d = fc["q0.5"].to_numpy() - truth.to_numpy()
+    return {"RMSE": float(np.sqrt(np.nanmean(d ** 2))),
+            "MAE": float(np.nanmean(np.abs(d)))}
+
+skill_cov = pd.DataFrame({
+    "target only": _score(fc_bare),
+    "+ temp & precip": _score(fc_cov),
+}).T
+skill_cov["RMSE improvement %"] = (
+    100 * (skill_cov.loc["target only", "RMSE"] - skill_cov["RMSE"])
+    / skill_cov.loc["target only", "RMSE"]
+)
+skill_cov
+'''))
+dive.append(("code", r'''# Plot both forecasts against the observed record and the held-out truth.
+recent = df["streamflow"].loc[INIT - pd.Timedelta(days=30):INIT - pd.Timedelta(days=1)]
+
+fig, ax = plt.subplots(figsize=(13, 6))
+ax.plot(recent.index, recent.values, color="black", lw=2, label="observed history")
+ax.plot(truth.index, truth.values, color="black", lw=2.5, ls=":", label="held-out truth")
+ax.axvline(INIT, color="gray", ls="--", alpha=0.6)
+for fc, color, label in [(fc_bare, "tab:orange", "target only"),
+                         (fc_cov, "tab:blue", "+ temp & precip")]:
+    ax.plot(fc.index, fc["q0.5"], color=color, lw=2.5, label=f"{label} (median)")
+    ax.fill_between(fc.index, fc["q0.1"], fc["q0.9"], color=color, alpha=0.15)
+ax.set_ylabel("streamflow [m³/s]")
+ax.set_title(f"Delaware R. at Montague — {HORIZON}-day backtest from {INIT.date()}")
+ax.legend(loc="best")
+fig.tight_layout()
+'''))
+dive.append(("markdown", r"""Whether the covariates help depends on the window: during
+a rain-driven rise or recession the weather carries real predictive signal and the
+conditioned forecast tracks the truth better; during flat baseflow the streamflow
+history alone is already enough and the two are close. Try a different `INIT` (e.g. a
+storm week) to see the gap widen. Remember this is the *idealized* case — the future
+weather here is analysis, not a forecast.
+"""))
+dive.append(("markdown", r"""## Experiment 2 — gaps in the target history
+
+Real gauge records have missing days. We drop an increasing fraction of the *recent*
+year of the **real** Montague history and re-forecast (target-only). Chronos-2 accepts
+the NaNs directly — no imputation needed.
+"""))
+dive.append(("code", r'''def with_gaps(context_hist, frac, seed):
     r = np.random.default_rng(seed)
-    s = series.copy()
+    s = context_hist.copy()
     recent = s.index[-365:]
     drop = r.choice(recent, size=int(frac * len(recent)), replace=False)
-    s.loc[drop] = np.nan
+    s.loc[drop, "streamflow"] = np.nan
     return s
-
-rmse = lambda a, b: float(np.sqrt(np.nanmean((np.asarray(a) - np.asarray(b)) ** 2)))
 
 records = []
 for frac in [0.0, 0.1, 0.3, 0.5, 0.7]:
-    gapped = with_gaps(train, frac, seed=1)
-    pred = chronos_forecast(gapped)                # native NaN handling
-    records.append({"gap_frac": frac, "Chronos-2 RMSE": rmse(pred, truth.values)})
-skill = pd.DataFrame(records).set_index("gap_frac")
-skill
+    gapped = with_gaps(hist.set_index("timestamp"), frac, seed=1).reset_index()
+    fc = chronos_forecast(gapped)                       # native NaN handling
+    d = fc["q0.5"].to_numpy() - truth.to_numpy()
+    records.append({"gap_frac": frac, "Chronos-2 RMSE": float(np.sqrt(np.nanmean(d ** 2)))})
+skill_gaps = pd.DataFrame(records).set_index("gap_frac")
+skill_gaps
 '''))
 dive.append(("code", r'''fig, ax = plt.subplots(figsize=(9, 5))
-skill.plot(marker="o", ax=ax, legend=False)
+skill_gaps.plot(marker="o", ax=ax, legend=False)
 ax.set_xlabel("Fraction of last-year history missing")
-ax.set_ylabel(f"{HORIZON}-day forecast RMSE")
-ax.set_title("Chronos-2 forecast skill vs. gaps in the target history")
+ax.set_ylabel(f"{HORIZON}-day forecast RMSE [m³/s]")
+ax.set_title("Chronos-2 skill vs. gaps in the real Montague history")
+fig.tight_layout()
 '''))
 dive.append(("markdown", r"""## Takeaways
 
-- Chronos-2 ingests NaNs natively and degrades gracefully as gaps grow, rather than
-  failing — no imputation step required.
-- This is why the core notebook keeps **target** gaps and only requires the
-  **covariates** to be present: the model handles a patchy observation record for
-  you.
-- For a very gappy or short record, expect wider uncertainty; consider a longer
-  history window (`HISTORY_DAYS` in the core notebook) to give the model more
-  seasonal context.
+- **Covariates are optional but often worthwhile.** Feeding future-known weather can
+  sharpen the forecast, most visibly during precipitation-driven events; on quiet
+  baseflow days the streamflow history alone already captures the dynamics. This
+  backtest uses *observed* weather as the future covariate, so it's an upper bound —
+  a live forecast (core notebook §5) conditions on an imperfect weather *forecast*.
+- **Chronos-2 ingests NaNs natively** and degrades gracefully as target gaps grow
+  rather than failing — which is why the core notebook keeps target gaps and only
+  requires the *covariates* to be present.
+- For a very gappy or short record, expect wider uncertainty; a longer history window
+  (`HISTORY_DAYS`) gives the model more seasonal context.
 """))
 build(dive, "appendix_model_deep_dive.ipynb", "model deep dive")
