@@ -316,6 +316,7 @@ obs = rivretrieve.USAFetcher().get_data(
     end_date=str((INIT + pd.Timedelta(days=HORIZON)).date()),
 )["discharge_daily_mean"]
 obs.index = pd.to_datetime(obs.index)
+obs = pd.to_numeric(obs, errors="coerce")  # RivRetrieve may return strings
 obs.name = "streamflow"
 
 # --- upstream basin polygon (for clipping the weather grid) ---

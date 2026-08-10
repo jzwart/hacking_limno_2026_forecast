@@ -426,6 +426,7 @@ code(r'''if TARGET_MODE == "published" and cfg["source"].startswith("rivretrieve
         start_date="2010-01-01",
         end_date=str(pd.Timestamp.today().date()),
     )[cfg["rr_variable"]]
+    obs = pd.to_numeric(obs, errors="coerce")  # RivRetrieve may return strings
     obs.name = VARIABLE
 elif TARGET_MODE == "upload":
     obs = uploaded_obs
