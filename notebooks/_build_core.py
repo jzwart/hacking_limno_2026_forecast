@@ -208,10 +208,12 @@ Set `TARGET_MODE = "published"` and choose a `PRESET` key below. The default
 forecast. Commented presets show how to point at other gauges / sources.
 
 ### Option B — bring your own data
-Set `TARGET_MODE = "upload"`, then run the upload cell. Your CSV needs two
-columns: a date/timestamp column and a numeric value column. Gaps are fine —
-Chronos-2 forecasts from an incomplete history (we explore this in
-`appendix_model_deep_dive.ipynb`).""")
+Set `TARGET_MODE = "upload"` **and edit the `UPLOAD_META` cell** below (your site's
+latitude/longitude, variable, and units) — that second cell is part of the config
+too, not just Section 1's banner. Then run the upload cell. Your CSV needs two
+columns: a date/timestamp column and a numeric value column (see
+`docs/example_timeseries.csv` for the shape). Gaps are fine — Chronos-2 forecasts
+from an incomplete history (we explore this in `appendix_model_deep_dive.ipynb`).""")
 
 code(r'''# ============================ EDIT HERE ============================
 TARGET_MODE = "published"          # "published"  or  "upload"
@@ -228,7 +230,7 @@ PARTICIPANT = {
     "affiliation": "",
     "email": "",
     "orcid": "",           # optional
-    "coauthor_optin": False,  # True = consent to co-authorship on a global-eval output for Hacking Limnology 
+    "coauthor_optin": False,  # True = consent to co-authorship on a global-eval output for Hacking Limnology
 }
 # ==================================================================
 
@@ -271,14 +273,20 @@ code(r'''# Upload path — run this cell only if TARGET_MODE == "upload".
 UPLOAD_META = {
     "variable": "custom",   # "streamflow" | "stream_temperature" | "lake_temperature" | "custom"
     "units": "",            # e.g. "m3/s", "degC"
-    "lat": 51.4155,          # site location -> weather covariates
-    "lon": -0.3076,
+    "lat": None,             # ← CHANGE THIS: your site latitude  (weather covariates come from here)
+    "lon": None,             # ← CHANGE THIS: your site longitude
     "location_mode": "buffer",  # "buffer" (point+box) or "delineate" (river point)
     "buffer_deg": 0.25,          # half-width of weather box when location_mode=="buffer"
 }
 
 uploaded_obs = None
 if TARGET_MODE == "upload":
+    # Fail fast if the site location is still the placeholder — otherwise the
+    # weather covariates would be pulled from the wrong place with no error, and
+    # the forecast would look plausible but be silently wrong.
+    assert UPLOAD_META["lat"] is not None and UPLOAD_META["lon"] is not None, (
+        "Set UPLOAD_META['lat'] and ['lon'] to your site's coordinates before uploading."
+    )
     if IN_COLAB:
         from google.colab import files
         up = files.upload()
@@ -411,7 +419,7 @@ md(r"""## 4. Weather covariates from dynamical.org
 
 We average temperature and precipitation over the contributing area:
 past values from the **NOAA GEFS analysis** (the history the model sees) and
-**15-day ensemble forecasts** from both **NOAA GEFS** (31 members) and
+**10-day ensemble forecasts** from both **NOAA GEFS** (31 members) and
 **ECMWF IFS ENS** (51 members). Each ensemble member becomes one plausible future.
 
 > 💡 The dynamical.org STAC catalog at
