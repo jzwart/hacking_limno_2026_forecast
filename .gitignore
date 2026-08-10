@@ -15,6 +15,9 @@ my_timeseries.csv
 .cache/
 ~/.cache/huggingface/
 
+# Planning notes (not part of the workshop materials)
+overview.md
+
 # OS / editor
 .DS_Store
 .idea/
