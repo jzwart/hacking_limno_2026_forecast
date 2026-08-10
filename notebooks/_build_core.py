@@ -39,7 +39,8 @@ for an eventual global evaluation.
 #### Why forecast streamflow at Montague?
 Under the 1954 U.S. Supreme Court decree (today's Flexible Flow Management Program),
 New York City must release water from its Delaware Basin reservoirs (Cannonsville,
-Pepacton, Neversink) to keep a **minimum flow of 1,750 CFS (24-hr average)** at
+Pepacton, Neversink) to keep a **minimum flow of 1,750 CFS (~49.6 m³/s, 24-hr
+average)** at
 Montague, NJ — protecting downstream ecology, recreation, and water supply. Because
 water takes ~2–3 days to travel from the reservoirs, releases are planned days
 ahead, so a skillful few-day streamflow forecast directly informs how much to release
