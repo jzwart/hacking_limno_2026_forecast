@@ -36,6 +36,16 @@ for an eventual global evaluation.
 > forecast for the Delaware River at Montague, NJ (USGS-01438500). Then change the
 > single **config block** in Section 1 to forecast *your* site.
 
+#### Why forecast streamflow at Montague?
+Under the 1954 U.S. Supreme Court decree (today's Flexible Flow Management Program),
+New York City must release water from its Delaware Basin reservoirs (Cannonsville,
+Pepacton, Neversink) to keep a **minimum flow of 1,750 CFS (24-hr average)** at
+Montague, NJ — protecting downstream ecology, recreation, and water supply. Because
+water takes ~2–3 days to travel from the reservoirs, releases are planned days
+ahead, so a skillful few-day streamflow forecast directly informs how much to release
+and when. That decision-relevant, lead-time-sensitive setting is what this workshop
+demonstrates.
+
 ### How to run
 - **Google Colab (recommended):** click the badge in the README, or open this
   file via `colab.research.google.com/github/jzwart/hacking_limno_2026_forecast/blob/main/notebooks/forecast_workshop.ipynb`.
