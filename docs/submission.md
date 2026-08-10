@@ -53,7 +53,7 @@ trace and no distribution is fitted:
 }
 ```
 
-## Google Form spec (for the organizers to create)
+## Google Form spec 
 A form with these fields, mirroring the metadata so submissions are self-describing
 even if someone skips the JSON file:
 
