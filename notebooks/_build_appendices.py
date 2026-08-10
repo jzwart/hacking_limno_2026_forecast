@@ -60,8 +60,8 @@ import rioxarray  # noqa: F401
 import xvec  # noqa: F401  registers the .xvec accessor
 from shapely.geometry import shape
 
-# Same reference basin as the core notebook (Thames at Kingston).
-LAT, LON = 51.4155, -0.3076
+# Same reference basin as the core notebook (Delaware River at Montague, NJ).
+LAT, LON = 41.3123, -74.7960
 geo = requests.get(
     "https://mghydro.com/app/watershed_api",
     params={"lat": LAT, "lng": LON, "precision": "low"},
@@ -80,6 +80,54 @@ ds = (
 )
 ds["precipitation_surface"] *= 86_400  # -> mm/day
 ds
+'''))
+zonal.append(("markdown", r"""## The grid vs. the basin
+
+Before averaging, look at how the weather grid actually falls over the basin. Each
+cell is one GEFS grid box; the shaded polygon is the delineated basin. **Green** cells
+are the ones the hard clip in Method 1 keeps — `rio.clip` (default `all_touched=False`)
+keeps a cell when its *center* falls inside the polygon — and grey cells are dropped.
+Notice the boundary cells: several that clearly overlap the basin get dropped because
+their center sits just outside, which is exactly what the area-weighted mean fixes.
+"""))
+zonal.append(("code", r'''import matplotlib.pyplot as plt
+import numpy as np
+
+lats = ds["latitude"].values
+lons = ds["longitude"].values
+# Cell edges: midpoints between centers, extended by half a step at each end.
+def _edges(c):
+    c = np.sort(c)
+    step = np.diff(c).mean()
+    return np.concatenate([[c[0] - step / 2], (c[:-1] + c[1:]) / 2, [c[-1] + step / 2]])
+lat_edges, lon_edges = _edges(lats), _edges(lons)
+
+fig, ax = plt.subplots(figsize=(8, 8))
+# Grid lines at the cell edges.
+for x in lon_edges:
+    ax.axvline(x, color="0.7", lw=0.8, zorder=1)
+for y in lat_edges:
+    ax.axhline(y, color="0.7", lw=0.8, zorder=1)
+# Basin polygon on top.
+basin_gdf.plot(ax=ax, facecolor="tab:blue", edgecolor="navy", alpha=0.25, lw=2, zorder=2)
+# Grid-cell centers (the points that carry the weather values). rio.clip keeps a
+# cell when its CENTER falls inside the polygon (the default all_touched=False), so
+# color each center by that test — the green cells are exactly the ones that survive
+# .rio.clip(...).mean() in Method 1.
+from shapely.geometry import Point
+LON2D, LAT2D = np.meshgrid(lons, lats)
+used = np.array([basin.contains(Point(x, y))
+                 for x, y in zip(LON2D.ravel(), LAT2D.ravel())]).reshape(LON2D.shape)
+ax.scatter(LON2D[~used], LAT2D[~used], s=14, color="0.6", zorder=3,
+           label="dropped by clip")
+ax.scatter(LON2D[used], LAT2D[used], s=28, color="tab:green", edgecolor="darkgreen",
+           zorder=4, label=f"used by clip ({int(used.sum())} cells)")
+ax.set_xlim(lon_edges[0], lon_edges[-1])
+ax.set_ylim(lat_edges[0], lat_edges[-1])
+ax.set_xlabel("Longitude"); ax.set_ylabel("Latitude")
+ax.set_title("GEFS grid cells over the basin polygon")
+ax.set_aspect("equal"); ax.legend(loc="upper right")
+fig.tight_layout()
 '''))
 zonal.append(("markdown", r"""## Method 1 — hard clip (what the core notebook does)"""))
 zonal.append(("code", r'''clip_mean = (
@@ -125,6 +173,51 @@ b.plot(clip_mean.index, clip_mean["precipitation_surface"], label="hard clip", l
 b.plot(weighted_mean.index, weighted_mean["precipitation_surface"], label="xvec weighted", lw=2, ls="--")
 b.set_ylabel("Precip [mm/day]"); b.legend(); b.set_title("Basin-mean precipitation")
 fig.tight_layout()
+'''))
+zonal.append(("markdown", r"""## One-to-one comparison & difference stats
+
+The overlaid timeseries hide how much the two methods actually diverge. A one-to-one
+plot makes it obvious: points on the 1:1 line mean the methods agree, and spread off
+the line is the disagreement the area-weighting introduces. The table quantifies it
+(`weighted − hard clip`): mean bias, mean absolute difference, and the largest
+single-step difference.
+"""))
+zonal.append(("code", r'''import pandas as pd
+
+cmp = pd.DataFrame({
+    "temp_clip": clip_mean["temperature_2m"], "temp_wt": weighted_mean["temperature_2m"],
+    "precip_clip": clip_mean["precipitation_surface"], "precip_wt": weighted_mean["precipitation_surface"],
+}).dropna()
+
+fig, (a, b) = plt.subplots(1, 2, figsize=(12, 5.5))
+for ax, clip, wt, lab, unit in [
+    (a, "temp_clip", "temp_wt", "Temperature", "°C"),
+    (b, "precip_clip", "precip_wt", "Precipitation", "mm/day"),
+]:
+    ax.scatter(cmp[clip], cmp[wt], s=18, alpha=0.6, edgecolor="none")
+    lo = float(min(cmp[clip].min(), cmp[wt].min()))
+    hi = float(max(cmp[clip].max(), cmp[wt].max()))
+    ax.plot([lo, hi], [lo, hi], "k--", lw=1, label="1:1")
+    ax.set_xlabel(f"hard clip [{unit}]"); ax.set_ylabel(f"xvec weighted [{unit}]")
+    ax.set_title(lab); ax.set_aspect("equal"); ax.legend(loc="upper left")
+fig.tight_layout()
+
+def _stats(clip, wt):
+    d = cmp[wt] - cmp[clip]
+    denom = cmp[clip].abs().mean()
+    return {
+        "mean_bias": d.mean(),
+        "mean_abs_diff": d.abs().mean(),
+        "max_abs_diff": d.abs().max(),
+        "rmse": (d ** 2).mean() ** 0.5,
+        "mean_abs_diff_%": 100 * d.abs().mean() / denom if denom else float("nan"),
+    }
+
+diff_stats = pd.DataFrame({
+    "temperature_2m": _stats("temp_clip", "temp_wt"),
+    "precipitation_surface": _stats("precip_clip", "precip_wt"),
+}).T
+diff_stats
 '''))
 build(zonal, "appendix_zonal_stats.ipynb", "zonal stats")
 
