@@ -18,6 +18,9 @@ my_timeseries.csv
 # Planning notes (not part of the workshop materials)
 overview.md
 
+# Live-demo notebooks (run locally during the workshop; outputs not committed)
+live_demo/
+
 # OS / editor
 .DS_Store
 .idea/
